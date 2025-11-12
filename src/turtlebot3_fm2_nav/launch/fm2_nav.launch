@@ -1,0 +1,38 @@
+<launch>
+  <!-- Nodo de costmap dinámico en Python -->
+  <node pkg="turtlebot3_fm2_nav"
+        type="fm2_costmap_node.py"
+        name="fm2_costmap_node"
+        output="screen">
+
+    <!-- Parámetros del costmap -->
+    <param name="frame_map" value="map"/>
+    <param name="map_topic" value="/map"/>
+    <param name="scan_topic" value="/scan"/> 
+    <param name="obstacle_range" value="2.5"/> 
+    <param name="min_range" value="0.05"/> 
+    <param name="dynamic_inflate" value="2"/>
+  </node>
+
+  <!-- Nodo del FM2 Navigator -->
+  <node pkg="turtlebot3_fm2_nav"
+        type="fm2_nav_node.py"
+        name="fm2_navigator"
+        output="screen"
+        cwd="ROS_HOME">
+
+    <!-- Remap para que use el costmap dinámico -->
+    <remap from="map" to="/fm2_costmap/costmap"/>
+
+    <!-- Parámetros del FM2 -->
+    <param name="frame_map" value="map"/>
+    <param name="frame_base" value="base_link"/>
+    <param name="inflate" value="2"/>
+    <param name="lookahead" value="0.35"/>
+    <param name="v_lin" value="0.22"/>
+    <param name="v_ang_max" value="1.5"/>
+    <param name="goal_tolerance" value="0.08"/>
+    <param name="rate" value="20"/>
+    <param name="replan_period" value="1.0"/>
+  </node>
+</launch>
