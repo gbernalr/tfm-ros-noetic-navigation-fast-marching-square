@@ -1,0 +1,8 @@
+prefix=/home/gbernalr/tfm/intro_ws/devel
+
+Name: turtlebot3_fm2_nav
+Description: Description of turtlebot3_fm2_nav
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

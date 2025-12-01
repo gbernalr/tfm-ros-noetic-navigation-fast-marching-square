@@ -198,8 +198,11 @@ include_directories(
 
   catkin_package()
 
-  catkin_install_python(PROGRAMS
-    scripts/fm2_nav_node.py
+  catkin_install_python(
+    PROGRAMS
+      src/fm2_nav_node.py
+      src/fm2_costmap_node.py
+      src/simple_nav_node.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
   )
 
