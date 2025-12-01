@@ -13,14 +13,12 @@
     <param name="dynamic_inflate" value="2"/>
   </node>
 
-  <!-- Nodo del FM2 Test Planner (planifica + navega) -->
   <node pkg="turtlebot3_fm2_nav"
         type="simple_nav_node.py"
         name="fm2_test_planner"
         output="screen"
         cwd="ROS_HOME">
 
-    <!-- OJO: ya se suscribe a fm2_costmap/costmap en el código, no hace falta remap -->
     <param name="frame_map" value="map"/>
     <param name="frame_base" value="base_link"/>
     <param name="inflate" value="2"/>
