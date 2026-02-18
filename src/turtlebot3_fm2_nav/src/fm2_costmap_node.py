@@ -20,6 +20,9 @@ class FM2CostmapNode:
 
         self.dynamic_inflate = int(rospy.get_param("~dynamic_inflate", 0))
 
+        # Memoria de obstáculos dinámicos (en número de scans)
+        self.dynamic_memory = int(rospy.get_param("~dynamic_memory", 15))
+
         # Grid estático y dinámico
         self.static_grid = None       # np.array int8 (-1,0,100)
         self.map_res = None
@@ -28,7 +31,9 @@ class FM2CostmapNode:
         self.map_ox = None
         self.map_oy = None
 
-        self.dynamic_grid = None      # np.array int8 (0 libre, 100 obstáculo)
+        # dynamic_grid ahora es un "contador" de memoria (uint8)
+        # >0 => hay obstáculo dinámico reciente
+        self.dynamic_grid = None      # np.array uint8 (0 libre, >0 obstáculo reciente)
 
         # Posición del robot (en celdas de grid)
         self.robot_ix = None
@@ -52,46 +57,10 @@ class FM2CostmapNode:
         self.pub_costmap = rospy.Publisher("fm2_costmap/costmap",
                                            OccupancyGrid, queue_size=1, latch=True)
 
+        # Para no volcar costmap combinado a lo loco
+        self._last_costmap_dump_time = rospy.Time(0)
+
         rospy.loginfo("fm2_costmap_node listo. Esperando /map, /scan y /fm2_path...")
-
-    def _dump(self):
-        import cv2
-        if self.static_grid is None or self.dynamic_grid is None:
-            return
-
-        # Combinamos estático + dinámico
-        combined = self.static_grid.copy()
-        mask_dyn = (self.dynamic_grid == 100)
-        combined[mask_dyn] = 100
-
-        # OJO: shape (alto, ancho, 3) = (map_h, map_w, 3)
-        img = np.zeros((self.map_h, self.map_w, 3), dtype=np.uint8)
-
-        # Colores del mapa
-        # -1 -> gris (desconocido)
-        #  0 -> blanco (libre)
-        # 100 -> negro (obstáculo)
-        img[combined == -1]  = [128, 128, 128]
-        img[combined == 0]   = [255, 255, 255]
-        img[combined == 100] = [0, 0, 0]
-
-        # Dibujar path en azul (BGR: [255, 0, 0])
-        if self.path_cells:
-            for (ix, iy) in self.path_cells:
-                if 0 <= iy < self.map_h and 0 <= ix < self.map_w:
-                    img[iy, ix] = [255, 0, 0]  # azul
-
-        # Dibujar robot en rojo (BGR: [0, 0, 255])
-        if self.robot_ix is not None and self.robot_iy is not None:
-            r = 3  # "radio" del puntito del robot
-            for dy in range(-r, r + 1):
-                for dx in range(-r, r + 1):
-                    iy = self.robot_iy + dy
-                    ix = self.robot_ix + dx
-                    if 0 <= iy < self.map_h and 0 <= ix < self.map_w:
-                        img[iy, ix] = [0, 0, 255]
-
-        cv2.imwrite("/tmp/fm2_costmap.png", img)
 
     # ---------- Callbacks ----------
     def cb_map(self, msg: OccupancyGrid):
@@ -112,11 +81,12 @@ class FM2CostmapNode:
 
         self.static_grid = static_grid
 
-        # Inicializamos la parte dinámica
-        self.dynamic_grid = np.zeros_like(static_grid, dtype=np.int8)
+        # Inicializamos la parte dinámica como contador de memoria
+        self.dynamic_grid = np.zeros_like(static_grid, dtype=np.uint8)
 
         free_ratio = float((self.static_grid == 0).sum()) / (self.map_w * self.map_h)
         occ_ratio  = float((self.static_grid == 100).sum()) / (self.map_w * self.map_h)
+
         rospy.loginfo("Mapa estático cargado: %.1f%% libre, %.1f%% obstáculo.",
                       100.0 * free_ratio, 100.0 * occ_ratio)
 
@@ -152,12 +122,18 @@ class FM2CostmapNode:
         # Guardamos la posición del láser/robot en grid
         self.robot_ix, self.robot_iy = self.world_to_grid(tx, ty)
 
-        # Reiniciamos la rejilla dinámica
-        self.dynamic_grid.fill(0)
+        # --- DECAY DE OBSTÁCULOS DINÁMICOS ---
+        if self.dynamic_grid is None:
+            self.dynamic_grid = np.zeros_like(self.static_grid, dtype=np.uint8)
+        else:
+            decay_mask = self.dynamic_grid > 0
+            self.dynamic_grid[decay_mask] -= 1
 
         angle = scan.angle_min
         cos_yaw = math.cos(yaw)
         sin_yaw = math.sin(yaw)
+
+        used_points = 0
 
         for r in scan.ranges:
             if not np.isfinite(r):
@@ -177,7 +153,9 @@ class FM2CostmapNode:
             ix, iy = self.world_to_grid(x_m, y_m)
 
             if 0 <= ix < self.map_w and 0 <= iy < self.map_h:
-                self.dynamic_grid[iy, ix] = 100
+                # Recargamos memoria en esa celda: obstáculo dinámico visto recientemente
+                self.dynamic_grid[iy, ix] = self.dynamic_memory
+                used_points += 1
 
             angle += scan.angle_increment
 
@@ -186,22 +164,24 @@ class FM2CostmapNode:
                 import cv2
                 k = 2 * self.dynamic_inflate + 1
                 kernel = np.ones((k, k), np.uint8)
-                dyn = (self.dynamic_grid == 100).astype(np.uint8)
+                # Trabajamos sobre un mapa binario de "hay obstáculo dinámico"
+                dyn = (self.dynamic_grid > 0).astype(np.uint8)
                 dyn = cv2.dilate(dyn, kernel, iterations=1)
-                self.dynamic_grid[dyn == 1] = 100
+                # Donde el inflado diga que hay obstáculo, recargamos memoria
+                self.dynamic_grid[dyn == 1] = self.dynamic_memory
             except ImportError:
                 rospy.logwarn_throttle(10.0, "OpenCV no disponible, dynamic_inflate ignorado.")
 
         # Log para ver si realmente se están marcando celdas dinámicas
-        dyn_count = int((self.dynamic_grid == 100).sum())
-        rospy.loginfo_throttle(1.0, "Celdas dinámicas ocupadas: %d", dyn_count)
+        dyn_count = int((self.dynamic_grid > 0).sum())
+        rospy.loginfo_throttle(1.0, "Celdas dinámicas ocupadas (memoria >0): %d", dyn_count)
 
-        self._dump()
         self.publish_costmap()
 
     def cb_path(self, msg: Path):
         """
-        Guarda el path en coordenadas de grid para poder dibujarlo en el dump.
+        Guarda el path en coordenadas de grid para poder dibujarlo en el dump
+        y además loguearlo.
         """
         if self.map_w is None or self.map_h is None:
             return
@@ -227,9 +207,10 @@ class FM2CostmapNode:
 
         combined = self.static_grid.copy()
 
-        # Añadimos obstáculo dinámico
-        mask_dyn = (self.dynamic_grid == 100)
-        combined[mask_dyn] = 100
+        # Añadimos obstáculo dinámico: cualquier celda con memoria > 0 es obstáculo
+        if self.dynamic_grid is not None:
+            mask_dyn = (self.dynamic_grid > 0)
+            combined[mask_dyn] = 100
 
         msg = OccupancyGrid()
         msg.header.stamp = rospy.Time.now()

@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 import rospy
 import numpy as np
-import os
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Path
 import tf2_ros
-import tf2_geometry_msgs
 import cv2
 
-import sys
 from fm2 import FM2
 from fm2.entities import FM2Map, FM2Info
 
@@ -122,40 +119,6 @@ class FM2TestPlanner:
             path.poses.append(ps)
         self.pub_path.publish(path)
 
-    def _dump_fm2_debug(self, binary, start_ix, start_iy, goal_ix, goal_iy, info):
-        """
-        Dibuja el mapa binario que ve FM2 + path en /tmp/fm2_planner.png
-        """
-        try:
-            h, w = binary.shape
-            img = np.zeros((h, w, 3), dtype=np.uint8)
-
-            # 1 = libre (blanco), 0 = obstáculo (negro)
-            img[binary == 1] = [255, 255, 255]
-            img[binary == 0] = [0, 0, 0]
-
-            # Dibujar path de FM2 en azul
-            if info is not None and info.path is not None:
-                xs, ys = info.path
-                for ix, iy in zip(xs, ys):
-                    iy = int(iy)
-                    ix = int(ix)
-                    if 0 <= iy < h and 0 <= ix < w:
-                        img[iy, ix] = [255, 0, 0]  # azul
-
-            # Start en verde
-            if 0 <= start_iy < h and 0 <= start_ix < w:
-                img[start_iy, start_ix] = [0, 255, 0]
-
-            # Goal en rojo
-            if 0 <= goal_iy < h and 0 <= goal_ix < w:
-                img[goal_iy, goal_ix] = [0, 0, 255]
-
-            cv2.imwrite("/tmp/fm2_planner.png", img)
-        except Exception as e:
-            rospy.logwarn("Error en _dump_fm2_debug: %s", e)
-
-    # ----------------- Planificación -----------------
     def _plan(self, trigger="timer"):
         if self.map_bin is None:
             rospy.logwarn_throttle(5, "Falta MAPA (map_bin es None)")
@@ -172,10 +135,8 @@ class FM2TestPlanner:
         start_ix, start_iy = self._world_to_grid(sx, sy)
         goal_ix, goal_iy = self._world_to_grid(gx, gy)
 
-        # 1. Copia del mapa binario base
         binary = self.map_bin.copy().astype(np.uint8)
 
-        # 2. Inflado
         if self.inflation > 0:
             k = 2 * self.inflation + 1
             kernel = np.ones((k, k), np.uint8)
@@ -183,16 +144,11 @@ class FM2TestPlanner:
             inv = cv2.dilate(inv, kernel, iterations=1)
             binary = 1 - inv
 
-        # 3. Planificación con FM2
         self.fm2 = FM2(mode="cpu")
         fm2_map = FM2Map.from_binary_map(binary, create_border=True)
         self.fm2.set_map(fm2_map)
-        info = self.fm2.get_path((start_ix, start_iy), (goal_ix, goal_iy))
+        info = self.fm2.get_path((int(start_ix), int(start_iy)), (int(goal_ix), int(goal_iy)))
 
-        # Dump de debug del mapa que VE FM2 (no el costmap puro)
-        self._dump_fm2_debug(binary, start_ix, start_iy, goal_ix, goal_iy, info)
-
-        # 4. Publicar Path
         if info.path is None:
             rospy.logwarn("FM2 no encontró ruta")
             self.path_world = None

@@ -10,8 +10,6 @@ from nav_msgs.msg import OccupancyGrid, Path
 from fm2 import FM2
 from fm2.entities import FM2Map, FM2Info
 
-from datetime import datetime
-
 
 class FM2Navigator:
     def __init__(self):
@@ -115,7 +113,8 @@ class FM2Navigator:
         if msg.header.frame_id != self.frame_map:
             try:
                 msg = self._transform_pose(msg, self.frame_map)
-            except Exception:
+            except Exception as e:
+                rospy.logwarn(f"cb_goal: No se pudo transformar goal: {e}")
                 return
 
         self.goal_world = (msg.pose.position.x, msg.pose.position.y)
@@ -138,12 +137,14 @@ class FM2Navigator:
                 x = pose.pose.position.x
                 y = pose.pose.position.y
                 yaw = self._yaw_from_quat(pose.pose.orientation)
-            except Exception:
+            except Exception as e:
+                rospy.logwarn(f"cb_amcl: No se pudo transformar pose: {e}")
                 return
         else:
             x = msg.pose.pose.position.x
             y = msg.pose.pose.position.y
             yaw = self._yaw_from_quat(msg.pose.pose.orientation)
+
         self.last_pose = (x, y, yaw)
         self.have_amcl = True
 
@@ -168,11 +169,13 @@ class FM2Navigator:
         return (a + math.pi) % (2*math.pi) - math.pi
 
     def _world_to_grid(self, x, y):
+        # ix = columna, iy = fila
         ix = int((x - self.map_ox) / self.map_res)
         iy = int((y - self.map_oy) / self.map_res)
         return ix, iy
 
     def _grid_to_world(self, ix, iy):
+        # ix = columna, iy = fila
         x = self.map_ox + (ix + 0.5)*self.map_res
         y = self.map_oy + (iy + 0.5)*self.map_res
         return x, y
@@ -203,12 +206,14 @@ class FM2Navigator:
                 y = tf.transform.translation.y
                 yaw = self._yaw_from_quat(tf.transform.rotation)
                 self.last_pose = (x, y, yaw)
-            except Exception:
+            except Exception as e:
+                rospy.logwarn(f"_plan_from_current_pose: No se pudo obtener TF: {e}")
                 return
 
         sx, sy, _ = self.last_pose
         gx, gy = self.goal_world
 
+        # ix = columna, iy = fila
         start_ix, start_iy = self._world_to_grid(sx, sy)
         goal_ix, goal_iy = self._world_to_grid(gx, gy)
 
@@ -224,28 +229,54 @@ class FM2Navigator:
             inv = cv2.dilate(inv, kernel, iterations=1)
             binary = 1 - inv
 
-        self.fm2 = FM2(mode="cpu")
-        fm2_map = FM2Map.from_binary_map(binary, create_border=True)
-        self.fm2.set_map(fm2_map)
-
+        # --- FM2 MAP & SET_MAP ---
         try:
+            self.fm2 = FM2(mode="cpu")
+            fm2_map = FM2Map.from_binary_map(binary, create_border=True)
+            self.fm2.set_map(fm2_map)
+        except Exception as e:
+            rospy.logwarn(f"_plan_from_current_pose: Error en set_map: {e}")
+            self.path_world = None
+            return
+
+        # --- FM2 GET_PATH ---
+        try:
+            # FM2 espera (row, col) = (iy, ix)
             info: FM2Info = self.fm2.get_path(
-                (int(start_ix), int(start_iy)),
-                (int(goal_ix), int(goal_iy))
+                (int(start_iy), int(start_ix)),   # row, col
+                (int(goal_iy),  int(goal_ix))     # row, col
             )
-        except IndexError:
+        except IndexError as e:
+            rospy.logwarn(f"_plan_from_current_pose: IndexError en get_path: {e}")
+            self.path_world = None
+            return
+        except Exception as e:
+            rospy.logwarn(f"_plan_from_current_pose: Error en get_path: {e}")
             self.path_world = None
             return
 
         if info.path is None:
+            rospy.logwarn("FM2: No se encontró ruta")
             self.path_world = None
             return
 
-        xs, ys = info.path
-        pts = [self._grid_to_world(int(ix), int(iy)) for ix, iy in zip(xs, ys)]
+        # info.path viene en (row, col)
+        rows, cols = info.path
 
-        self.check_pts_collisions(pts, binary=binary, radius_cells=0)
+        # grid_to_world espera (ix, iy) = (col, fila)
+        pts = [self._grid_to_world(int(col), int(row)) for row, col in zip(rows, cols)]
 
+        # Comprobamos colisiones del path con el mapa binario usado por FM2
+        result = self.check_pts_collisions(pts, binary=binary, radius_cells=0)
+
+        if not result["all_free"]:
+            rospy.logwarn(
+                f"Path rechazado por colisiones: {result['n_collisions']} puntos en colisión"
+            )
+            self.path_world = None
+            return
+
+        # Si llegamos aquí, el path está libre según el mapa binario
         self.path_world = pts
         self.path_idx = 0
         self.mode_align = False
