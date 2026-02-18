@@ -90,7 +90,6 @@ class FM2CostmapNode:
         rospy.loginfo("Mapa estático cargado: %.1f%% libre, %.1f%% obstáculo.",
                       100.0 * free_ratio, 100.0 * occ_ratio)
 
-        # Publicamos el costmap combinado
         self.publish_costmap()
 
     def cb_scan(self, scan: LaserScan):
@@ -119,10 +118,8 @@ class FM2CostmapNode:
         tx = tf.transform.translation.x
         ty = tf.transform.translation.y
 
-        # Guardamos la posición del láser/robot en grid
         self.robot_ix, self.robot_iy = self.world_to_grid(tx, ty)
 
-        # --- DECAY DE OBSTÁCULOS DINÁMICOS ---
         if self.dynamic_grid is None:
             self.dynamic_grid = np.zeros_like(self.static_grid, dtype=np.uint8)
         else:
@@ -153,7 +150,6 @@ class FM2CostmapNode:
             ix, iy = self.world_to_grid(x_m, y_m)
 
             if 0 <= ix < self.map_w and 0 <= iy < self.map_h:
-                # Recargamos memoria en esa celda: obstáculo dinámico visto recientemente
                 self.dynamic_grid[iy, ix] = self.dynamic_memory
                 used_points += 1
 
@@ -164,15 +160,12 @@ class FM2CostmapNode:
                 import cv2
                 k = 2 * self.dynamic_inflate + 1
                 kernel = np.ones((k, k), np.uint8)
-                # Trabajamos sobre un mapa binario de "hay obstáculo dinámico"
                 dyn = (self.dynamic_grid > 0).astype(np.uint8)
                 dyn = cv2.dilate(dyn, kernel, iterations=1)
-                # Donde el inflado diga que hay obstáculo, recargamos memoria
                 self.dynamic_grid[dyn == 1] = self.dynamic_memory
             except ImportError:
                 rospy.logwarn_throttle(10.0, "OpenCV no disponible, dynamic_inflate ignorado.")
 
-        # Log para ver si realmente se están marcando celdas dinámicas
         dyn_count = int((self.dynamic_grid > 0).sum())
         rospy.loginfo_throttle(1.0, "Celdas dinámicas ocupadas (memoria >0): %d", dyn_count)
 
@@ -207,7 +200,6 @@ class FM2CostmapNode:
 
         combined = self.static_grid.copy()
 
-        # Añadimos obstáculo dinámico: cualquier celda con memoria > 0 es obstáculo
         if self.dynamic_grid is not None:
             mask_dyn = (self.dynamic_grid > 0)
             combined[mask_dyn] = 100

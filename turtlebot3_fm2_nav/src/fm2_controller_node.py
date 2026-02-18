@@ -120,7 +120,6 @@ class FM2Controller:
         else:
             self.goal_yaw = None
 
-        # Nuevo goal → salimos de modo align y esperaremos nueva path
         self.mode_align = False
 
     def cb_amcl(self, msg):
@@ -172,10 +171,9 @@ class FM2Controller:
             if self.last_pose is None:
                 return
 
-            x, y, yaw = self.last_pose  # x, y no se usan, pero lo dejamos claro
+            x, y, yaw = self.last_pose 
 
             if self.goal_yaw is None:
-                # No hay yaw objetivo, detener y limpiar
                 self._stop()
                 self.path_world = None
                 self.mode_align = False
@@ -183,7 +181,6 @@ class FM2Controller:
 
             e_yaw = self._wrap_to_pi(self.goal_yaw - yaw)
             if abs(e_yaw) < self.goal_yaw_tolerance:
-                # Alineado → paramos y limpiamos estado
                 self._stop()
                 self.path_world = None
                 self.goal_yaw = None
@@ -198,7 +195,6 @@ class FM2Controller:
             self.pub_cmd.publish(twist)
             return
 
-        # Seguimiento de ruta normal
         if self.path_world is None or not self.path_world:
             return
         if self.last_pose is None:
@@ -206,11 +202,9 @@ class FM2Controller:
 
         x, y, yaw = self.last_pose
 
-        # Selección de punto objetivo con lookahead
         target = None
         n_pts = len(self.path_world)
 
-        # Avanzamos path_idx cuando estemos cerca del punto actual
         if 0 <= self.path_idx < n_pts:
             px, py = self.path_world[self.path_idx]
             if np.hypot(px - x, py - y) < 0.25:
@@ -224,14 +218,11 @@ class FM2Controller:
                 break
 
         if target is None:
-            # Último punto de la ruta
             goal_x, goal_y = self.path_world[-1]
             dist_goal = np.hypot(goal_x - x, goal_y - y)
 
             if dist_goal < self.goal_tolerance:
-                # Hemos llegado en posición
                 if self.use_goal_yaw and self.goal_yaw is not None:
-                    # Pasamos a fase de alineación
                     self.mode_align = True
                     self._stop()
                 else:
@@ -241,7 +232,6 @@ class FM2Controller:
             else:
                 target = (goal_x, goal_y)
 
-        # Seguimos el target seleccionado
         self._track_target(x, y, yaw, target)
 
     def spin(self):
