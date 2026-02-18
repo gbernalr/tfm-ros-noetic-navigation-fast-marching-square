@@ -1,32 +1,66 @@
 <launch>
-  <!-- Nodo de costmap dinámico en Python -->
-  <node pkg="turtlebot3_fm2_nav"
-        type="fm2_costmap_node.py"
-        name="fm2_costmap_node"
-        output="screen">
+  <!-- =========================
+       ARGUMENTOS
+       ========================= -->
+  <arg name="model" default="$(env TURTLEBOT3_MODEL)" doc="model type [burger, waffle, waffle_pi]"/>
+  <arg name="map_file" default="$(find turtlebot3_navigation)/maps/map.yaml"/>
+  <arg name="open_rviz" default="true"/>
 
-    <param name="frame_map" value="map"/>
-    <param name="map_topic" value="/map"/>
-    <param name="scan_topic" value="/scan"/>
-    <param name="obstacle_range" value="2.5"/>
-    <param name="min_range" value="0.05"/>
-    <param name="dynamic_inflate" value="2"/>
-  </node>
+  <!-- Posición inicial en Gazebo -->
+  <arg name="x_pos" default="-2.0"/>
+  <arg name="y_pos" default="-0.5"/>
+  <arg name="z_pos" default="0.0"/>
 
-  <node pkg="turtlebot3_fm2_nav"
-        type="fm2_nav_node.py"
-        name="fm2_test_planner"
-        output="screen"
-        cwd="ROS_HOME">
+  <!-- =========================
+       GAZEBO + MUNDO
+       ========================= -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find turtlebot3_gazebo)/worlds/turtlebot3_world.world"/>
+    <arg name="paused"     value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui"        value="true"/>
+    <arg name="headless"   value="false"/>
+    <arg name="debug"      value="false"/>
+  </include>
 
-    <param name="frame_map" value="map"/>
-    <param name="frame_base" value="base_link"/>
-    <param name="inflate" value="2"/>
-    <param name="lookahead" value="0.35"/>
-    <param name="v_lin" value="0.22"/>
-    <param name="v_ang_max" value="1.5"/>
-    <param name="goal_tolerance" value="0.08"/>
-    <param name="rate" value="20"/>
-    <param name="replan_period" value="0.1"/>
-  </node>
+  <!-- Descripción del robot (URDF) -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro" />
+
+  <!-- Spawnear el modelo en la posición inicial indicada -->
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf"
+        args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -param robot_description" />
+
+  <!-- =========================
+       TURTLEBOT3 (BRINGUP)
+       ========================= -->
+  <include file="$(find turtlebot3_bringup)/launch/turtlebot3_remote.launch">
+    <arg name="model" value="$(arg model)" />
+  </include>
+
+  <!-- =========================
+       MAP SERVER
+       ========================= -->
+  <node pkg="map_server" type="map_server" name="map_server" args="$(arg map_file)"/>
+
+  <!-- =========================
+       AMCL
+       ========================= -->
+  <include file="$(find turtlebot3_navigation)/launch/amcl.launch"/>
+
+  <!-- =========================
+       FM2 NODES (COSTMAP + PLANNER + CONTROLLER)
+       ========================= -->
+  <node pkg="turtlebot3_fm2_nav" type="fm2_costmap_node"    name="fm2_costmap_node"    output="screen"/>
+  <node pkg="turtlebot3_fm2_nav" type="fm2_planner_node"    name="fm2_planner_node"    output="screen"/>
+  <node pkg="turtlebot3_fm2_nav" type="fm2_controller_node" name="fm2_controller_node" output="screen"/>
+
+  <!-- =========================
+       RVIZ (OPCIONAL)
+       ========================= -->
+  <group if="$(arg open_rviz)">
+    <node pkg="rviz" type="rviz" name="rviz" required="true"
+          args="-d $(find turtlebot3_navigation)/rviz/turtlebot3_navigation.rviz"/>
+  </group>
+
 </launch>

@@ -131,32 +131,6 @@ class FM2TestPlanner:
             path.poses.append(ps)
         self.pub_path.publish(path)
 
-    def _dump_fm2_debug(self, binary, start_ix, start_iy, goal_ix, goal_iy, info):
-        try:
-            h, w = binary.shape
-            img = np.zeros((h, w, 3), dtype=np.uint8)
-
-            img[binary == 1] = [255, 255, 255]
-            img[binary == 0] = [0, 0, 0]
-
-            if info is not None and info.path is not None:
-                xs, ys = info.path
-                for ix, iy in zip(xs, ys):
-                    iy = int(iy)
-                    ix = int(ix)
-                    if 0 <= iy < h and 0 <= ix < w:
-                        img[iy, ix] = [255, 0, 0]
-
-            if 0 <= start_iy < h and 0 <= start_ix < w:
-                img[start_iy, start_ix] = [0, 255, 0]
-
-            if 0 <= goal_iy < h and 0 <= goal_ix < w:
-                img[goal_iy, goal_ix] = [0, 0, 255]
-
-            cv2.imwrite("/tmp/fm2_planner.png", img)
-        except Exception as e:
-            rospy.logwarn("Error en _dump_fm2_debug: %s", e)
-
     def _plan(self, trigger="timer"):
         if self.map_bin is None:
             rospy.logwarn_throttle(5, "Falta MAPA (map_bin es None)")
@@ -186,8 +160,6 @@ class FM2TestPlanner:
         fm2_map = FM2Map.from_binary_map(binary, create_border=True)
         self.fm2.set_map(fm2_map)
         info = self.fm2.get_path((int(start_ix), int(start_iy)), (int(goal_ix), int(goal_iy)))
-
-        self._dump_fm2_debug(binary, start_ix, start_iy, goal_ix, goal_iy, info)
 
         if info.path is None:
             rospy.logwarn("FM2 no encontró ruta")
