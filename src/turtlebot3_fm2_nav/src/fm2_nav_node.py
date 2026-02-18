@@ -266,7 +266,6 @@ class FM2Navigator:
         # grid_to_world espera (ix, iy) = (col, fila)
         pts = [self._grid_to_world(int(col), int(row)) for row, col in zip(rows, cols)]
 
-        # Comprobamos colisiones del path con el mapa binario usado por FM2
         result = self.check_pts_collisions(pts, binary=binary, radius_cells=0)
 
         if not result["all_free"]:
@@ -276,7 +275,6 @@ class FM2Navigator:
             self.path_world = None
             return
 
-        # Si llegamos aquí, el path está libre según el mapa binario
         self.path_world = pts
         self.path_idx = 0
         self.mode_align = False

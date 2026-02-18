@@ -171,7 +171,6 @@ class FM2Planner:
         self.grid_bin = (1 - obs).astype(np.uint8)
 
     def cb_goal(self, msg):
-        # Aseguramos que el goal esté en frame_map
         if msg.header.frame_id != self.frame_map:
             try:
                 msg = self._transform_pose(msg, self.frame_map)
@@ -186,7 +185,6 @@ class FM2Planner:
             self.goal_world[1],
         )
 
-        # Forzamos replan inmediato
         self.path_world = None
         self.last_replan_time = rospy.Time(0)
 
@@ -217,7 +215,6 @@ class FM2Planner:
         if self.grid_bin is None or self.goal_world is None:
             return
 
-        # Obtenemos pose actual (si no hay AMCL, probamos TF)
         if self.last_pose is None:
             try:
                 tf = self.tf_buffer.lookup_transform(
@@ -246,8 +243,7 @@ class FM2Planner:
 
         if binary.size == 0:
             return
-
-        # Inflado de obstáculos
+        
         if self.inflation > 0:
             k = 2 * self.inflation + 1
             kernel = np.ones((k, k), np.uint8)
@@ -301,26 +297,21 @@ class FM2Planner:
         rospy.loginfo("FM2Planner: nueva ruta con %d puntos", len(pts))
 
     def _planner_step(self):
-        # Solo planificamos si tenemos mapa, goal y pose
         if self.grid_bin is None or self.goal_world is None or self.last_pose is None:
             return
 
         now = rospy.Time.now()
         need_replan = False
 
-        # Si no hay path aún, planificamos
         if self.path_world is None:
             need_replan = True
 
-        # Replan periódico
         if not need_replan and self.replan_period > 0.0:
             if (now - self.last_replan_time).to_sec() >= self.replan_period:
                 need_replan = True
 
-        # Replan si estamos lejos del camino actual
         if (not need_replan and self.path_world and self.replan_offpath > 0.0):
             x, y, _ = self.last_pose
-            # Distancia mínima a la ruta actual
             dmin = min(np.hypot(px - x, py - y) for (px, py) in self.path_world)
             if dmin > self.replan_offpath:
                 rospy.loginfo("FM2Planner: robot fuera de ruta (%.3f m), replanificando", dmin)
