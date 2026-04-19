@@ -1,0 +1,125 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Displays:
+    # ── Suelo (grid) ──
+    - Class: rviz/Grid
+      Name: Ground Grid
+      Enabled: true
+      Cell Count: 20
+      Cell Size: 1
+      Color: 100; 100; 100
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: world
+
+    # ── TF ──
+    - Class: rviz/TF
+      Name: TF
+      Enabled: true
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Frame Timeout: 15
+      Marker Scale: 0.3
+
+    # ── Tracker markers 3D (esferas, flechas, trayectoria) ──
+    - Class: rviz/MarkerArray
+      Name: Tracker Markers
+      Enabled: true
+      Marker Topic: /rgbd_person_tracker_node/markers
+
+    # ── Imagen anotada (keypoints + IDs) ──
+    - Class: rviz/Image
+      Name: Annotated Image
+      Enabled: true
+      Image Topic: /rgbd_person_tracker_node/image_annotated
+      Transport Hint: raw
+      Queue Size: 1
+
+    # ── Vista cenital (trayectoria 2D bird's-eye) ──
+    - Class: rviz/Image
+      Name: Top View
+      Enabled: true
+      Image Topic: /rgbd_person_tracker_node/top_view
+      Transport Hint: raw
+      Queue Size: 1
+
+    # ── Nube de puntos ──
+    - Class: rviz/PointCloud2
+      Name: Depth Cloud
+      Enabled: true
+      Topic: /camera/depth/points
+      Size (m): 0.02
+      Style: Points
+      Color Transformer: AxisColor
+      Axis: Z
+      Queue Size: 1
+      Selectable: true
+
+    # ── RGB cruda (debug) ──
+    - Class: rviz/Image
+      Name: Raw RGB
+      Enabled: false
+      Image Topic: /camera/color/image_raw
+      Transport Hint: raw
+      Queue Size: 1
+
+    # ── Depth cruda (debug) ──
+    - Class: rviz/Image
+      Name: Raw Depth
+      Enabled: false
+      Image Topic: /camera/depth/image_raw
+      Transport Hint: raw
+      Queue Size: 1
+
+  Global Options:
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 8
+      Focal Point:
+        X: 3
+        Y: 0
+        Z: 0.8
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.5
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 3.14
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Width: 1400
+  X: 100
+  Y: 100
+  Views:
+    collapsed: false
+  "Annotated Image":
+    collapsed: false
+  "Top View":
+    collapsed: false
