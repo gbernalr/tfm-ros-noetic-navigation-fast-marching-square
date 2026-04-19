@@ -1,0 +1,101 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="tracker_scene">
+
+    <!-- ── Suelo y luz ────────────────────────────────────────────── -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- ── Persona animada (walk.dae) ─────────────────────────────
+         Trayectoria en forma de 8 (lemniscate) centrada en x=3.0.
+         Parametrización:
+           x(t) = 3.0 + 0.75·sin(2t)
+           y(t) = 1.5·sin(t)
+         con t ∈ [0, 2π], período = 16 s.
+         Lazo superior (y > 0) → lazo inferior (y < 0) → repite.
+         ─────────────────────────────────────────────────────────── -->
+    <actor name="walking_person">
+      <skin>
+        <filename>walk.dae</filename>
+        <scale>1.0</scale>
+      </skin>
+
+      <animation name="walking">
+        <filename>walk.dae</filename>
+        <scale>1.0</scale>
+        <interpolate_x>true</interpolate_x>
+      </animation>
+
+      <script>
+        <loop>true</loop>
+        <delay_start>0.0</delay_start>
+        <auto_start>true</auto_start>
+
+        <!-- Trayectoria en 8: 12 waypoints + cierre, período 16 s  -->
+        <trajectory id="0" type="walking">
+          <!-- ── Lazo superior (y positivo) ── -->
+          <waypoint>
+            <time>0.00</time>
+            <pose>3.000  0.000 0 0 0  0.785</pose>
+          </waypoint>
+          <waypoint>
+            <time>1.33</time>
+            <pose>3.650  0.750 0 0 0  1.047</pose>
+          </waypoint>
+          <waypoint>
+            <time>2.67</time>
+            <pose>3.650  1.299 0 0 0  2.356</pose>
+          </waypoint>
+          <waypoint>
+            <time>4.00</time>
+            <pose>3.000  1.500 0 0 0  3.142</pose>
+          </waypoint>
+          <waypoint>
+            <time>5.33</time>
+            <pose>2.350  1.299 0 0 0 -2.356</pose>
+          </waypoint>
+          <waypoint>
+            <time>6.67</time>
+            <pose>2.350  0.750 0 0 0 -1.047</pose>
+          </waypoint>
+          <!-- ── Cruce central ── -->
+          <waypoint>
+            <time>8.00</time>
+            <pose>3.000  0.000 0 0 0 -0.785</pose>
+          </waypoint>
+          <!-- ── Lazo inferior (y negativo) ── -->
+          <waypoint>
+            <time>9.33</time>
+            <pose>3.650 -0.750 0 0 0 -1.047</pose>
+          </waypoint>
+          <waypoint>
+            <time>10.67</time>
+            <pose>3.650 -1.299 0 0 0 -2.356</pose>
+          </waypoint>
+          <waypoint>
+            <time>12.00</time>
+            <pose>3.000 -1.500 0 0 0  3.142</pose>
+          </waypoint>
+          <waypoint>
+            <time>13.33</time>
+            <pose>2.350 -1.299 0 0 0  2.356</pose>
+          </waypoint>
+          <waypoint>
+            <time>14.67</time>
+            <pose>2.350 -0.750 0 0 0  1.047</pose>
+          </waypoint>
+          <!-- ── Cierre del lazo → repite ── -->
+          <waypoint>
+            <time>16.00</time>
+            <pose>3.000  0.000 0 0 0  0.785</pose>
+          </waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+  </world>
+</sdf>
