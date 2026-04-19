@@ -1,0 +1,6 @@
+<launch>
+  <include file="$(find rgbd_sim)/launch/sim.launch">
+    <arg name="rviz" value="true" />
+    <arg name="rviz_config" value="$(find rgbd_sim)/config/sim_rgbd_fixed_world.rviz" />
+  </include>
+</launch>

@@ -1,0 +1,53 @@
+# ============================================================
+# rgbd_person_tracker — Parámetros configurables
+# ============================================================
+
+# ── Estimación de pose (MediaPipe) ──────────────────────────
+mediapipe:
+  min_detection_confidence: 0.5
+  min_tracking_confidence:  0.5
+  model_complexity:         0        # 0=lite (rápido), 1=full, 2=heavy
+
+# ── Detección de personas (YOLOv8) ──────────────────────
+yolo:
+  model:          "yolov8n.pt"       # yolov8n/s/m/l/x
+  conf_threshold: 0.4                # confianza mínima para considerar persona
+  device:         "cpu"              # "cpu" o "cuda:0"
+  imgsz:          320                # resolución de entrada YOLO (320=rápido, 640=preciso)
+
+# ── Selección de punto anatómico ────────────────────────────
+pose_conf_threshold: 0.4             # confianza mínima de keypoint
+
+# ── Profundidad ─────────────────────────────────────────────
+depth_min:   0.5                     # metros, profundidad mínima válida
+depth_max:   8.0                     # metros, profundidad máxima válida
+patch_size:  5                       # lado del parche para mediana
+
+# ── Kalman ──────────────────────────────────────────────────
+kalman:
+  q_pos: 0.05                       # ruido de proceso en posición
+  q_vel: 0.20                       # ruido de proceso en velocidad
+
+# ── Asociación y gestión de tracks ──────────────────────────
+max_assoc_dist:      1.0             # metros, gating distancia máxima
+max_misses:          10              # frames sin observación → borrar
+min_hits_to_confirm: 3               # frames para confirmar un track
+
+# ── Frames TF ───────────────────────────────────────────────
+optical_frame: camera_depth_optical_frame
+world_frame:   world
+
+# ── Topics ──────────────────────────────────────────────────
+rgb_topic:         /camera/color/image_raw
+depth_topic:       /camera/depth/image_raw
+camera_info_topic: /camera/color/camera_info
+# ── Rendimiento ─────────────────────────────────────────
+process_every_n: 2                   # procesar 1 de cada N frames (Kalman predice en los demás)
+# ── Visualización — vista cenital ───────────────────────────
+visualization:
+  top_view_width:    500             # píxeles ancho canvas
+  top_view_height:   300             # píxeles alto canvas
+  top_view_meters_x: 10.0           # rango X en metros
+  top_view_meters_y:  6.0           # rango Y en metros
+  top_view_origin_x:  0.0           # X mínimo del mapa (metros)
+  top_view_origin_y: -3.0           # Y mínimo del mapa (metros)

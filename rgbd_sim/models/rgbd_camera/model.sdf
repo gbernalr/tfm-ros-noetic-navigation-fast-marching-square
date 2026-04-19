@@ -1,0 +1,84 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="rgbd_camera">
+    <static>true</static>
+
+    <!-- La pose absoluta se controla desde el launch para no duplicar offsets. -->
+    <pose>0 0 0 0 0 0</pose>
+
+    <link name="camera_link">
+      <inertial>
+        <mass>0.1</mass>
+        <inertia>
+          <ixx>0.001</ixx>
+          <ixy>0.0</ixy>
+          <ixz>0.0</ixz>
+          <iyy>0.001</iyy>
+          <iyz>0.0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+
+      <collision name="collision">
+        <geometry>
+          <box>
+            <size>0.08 0.08 0.04</size>
+          </box>
+        </geometry>
+      </collision>
+
+      <visual name="visual">
+        <geometry>
+          <box>
+            <size>0.08 0.08 0.04</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.1 0.1 0.1 1</ambient>
+          <diffuse>0.2 0.2 0.2 1</diffuse>
+        </material>
+      </visual>
+
+      <sensor name="rgbd_sensor" type="depth">
+        <always_on>1</always_on>
+        <update_rate>15</update_rate>
+        <visualize>true</visualize>
+
+        <camera>
+          <horizontal_fov>1.047198</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>10.0</far>
+          </clip>
+        </camera>
+
+        <plugin name="camera_plugin" filename="libgazebo_ros_openni_kinect.so">
+          <baseline>0.2</baseline>
+          <alwaysOn>true</alwaysOn>
+          <updateRate>0.0</updateRate>
+
+          <cameraName>camera</cameraName>
+
+          <!-- El plugin publica en el frame óptico; la cadena TF se completa en el launch. -->
+          <frameName>camera_depth_optical_frame</frameName>
+
+          <imageTopicName>/camera/color/image_raw</imageTopicName>
+          <cameraInfoTopicName>/camera/color/camera_info</cameraInfoTopicName>
+
+          <depthImageTopicName>/camera/depth/image_raw</depthImageTopicName>
+          <depthImageCameraInfoTopicName>/camera/depth/camera_info</depthImageCameraInfoTopicName>
+
+          <pointCloudTopicName>/camera/depth/points</pointCloudTopicName>
+
+          <pointCloudCutoff>0.3</pointCloudCutoff>
+          <pointCloudCutoffMax>8.0</pointCloudCutoffMax>
+        </plugin>
+      </sensor>
+    </link>
+  </model>
+</sdf>

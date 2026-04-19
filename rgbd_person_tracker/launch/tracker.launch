@@ -1,0 +1,20 @@
+<launch>
+  <!-- ═══════════════════════════════════════════════════════════════
+       tracker.launch — Nodo de tracking de personas (standalone).
+       Carga parámetros y lanza el nodo rgbd_person_tracker_node.
+       ═══════════════════════════════════════════════════════════════ -->
+
+  <arg name="rviz"        default="true" />
+  <arg name="rviz_config" default="$(find rgbd_person_tracker)/config/rgbd_tracker.rviz" />
+  <arg name="params_file" default="$(find rgbd_person_tracker)/config/tracker_params.yaml" />
+
+  <!-- Nodo principal -->
+  <node pkg="rgbd_person_tracker" type="rgbd_person_tracker_node.py"
+        name="rgbd_person_tracker_node" output="screen">
+    <rosparam file="$(arg params_file)" command="load" />
+  </node>
+
+  <!-- RViz (opcional) -->
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rgbd_tracker_rviz"
+        args="-d $(arg rviz_config)" output="screen" />
+</launch>

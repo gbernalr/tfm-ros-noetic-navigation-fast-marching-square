@@ -1,0 +1,73 @@
+<launch>
+  <!-- ═══════════════════════════════════════════════════════════════
+       sim_tracker.launch — Demo completo:
+         1) Generar escena Gazebo con N personas animadas
+         2) Gazebo con cámara RGB-D
+         3) Cadena TF de la cámara
+         4) Nodo tracker de personas (pose estimation + Kalman)
+         5) RViz con visualización
+       ═══════════════════════════════════════════════════════════════ -->
+
+  <arg name="gui"          default="true" />
+  <arg name="rviz"         default="true" />
+  <arg name="rviz_config"  default="$(find rgbd_person_tracker)/config/rgbd_tracker.rviz" />
+  <arg name="num_persons"  default="1"    doc="Número de personas animadas en Gazebo" />
+
+  <!-- Pose de la cámara -->
+  <arg name="camera_x"     default="0.0" />
+  <arg name="camera_y"     default="0.0" />
+  <arg name="camera_z"     default="1.20" />
+  <arg name="camera_roll"  default="0.0" />
+  <arg name="camera_pitch" default="0.0" />
+  <arg name="camera_yaw"   default="0.0" />
+
+  <!-- Path de modelos de rgbd_sim (para el modelo de cámara) -->
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find rgbd_sim)/models:$(optenv GAZEBO_MODEL_PATH)" />
+
+  <!-- ── 0) Generar .world con N personas ──────────────────────── -->
+  <node pkg="rgbd_person_tracker" type="generate_world.py"
+        name="generate_world" output="screen"
+        args="$(arg num_persons) /tmp/tracker_scene.world" />
+
+  <!-- ── 1) Gazebo con escena generada ─────────────────────────── -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name"
+         value="/tmp/tracker_scene.world" />
+    <arg name="paused"       value="false" />
+    <arg name="use_sim_time" value="true" />
+    <arg name="gui"          value="$(arg gui)" />
+    <arg name="headless"     value="false" />
+    <arg name="debug"        value="false" />
+  </include>
+
+  <!-- ── 2) Spawn cámara RGB-D (modelo de rgbd_sim) ───────────── -->
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_rgbd_camera"
+        args="-file $(find rgbd_sim)/models/rgbd_camera/model.sdf
+              -sdf -model rgbd_camera
+              -x $(arg camera_x) -y $(arg camera_y) -z $(arg camera_z)
+              -R $(arg camera_roll) -P $(arg camera_pitch) -Y $(arg camera_yaw)"
+        output="screen" />
+
+  <!-- ── 3) Cadena TF: world → camera_link → depth → optical ──── -->
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="world_to_camera_link_tf"
+        args="$(arg camera_x) $(arg camera_y) $(arg camera_z)
+              $(arg camera_yaw) $(arg camera_pitch) $(arg camera_roll)
+              world camera_link" />
+
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="camera_link_to_depth_frame_tf"
+        args="0 0 0 0 0 0 camera_link camera_depth_frame" />
+
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="camera_depth_to_optical_tf"
+        args="0 0 0 -1.57079632679 0 -1.57079632679
+              camera_depth_frame camera_depth_optical_frame" />
+
+  <!-- ── 4) Tracker basado en pose estimation + RGB-D ──────────── -->
+  <include file="$(find rgbd_person_tracker)/launch/tracker.launch">
+    <arg name="rviz"        value="$(arg rviz)" />
+    <arg name="rviz_config" value="$(arg rviz_config)" />
+  </include>
+</launch>

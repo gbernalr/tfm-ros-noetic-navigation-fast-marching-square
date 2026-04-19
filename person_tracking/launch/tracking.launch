@@ -1,0 +1,54 @@
+<launch>
+  <arg name="rviz" default="false" />
+  <arg name="rviz_config" default="$(find person_tracking)/config/person_tracking.rviz" />
+
+  <arg name="tracking_frame" default="world" />
+  <arg name="cloud_topic" default="/camera/depth/points" />
+
+  <arg name="roi_x_min" default="0.3" />
+  <arg name="roi_x_max" default="8.0" />
+  <arg name="roi_y_min" default="-3.0" />
+  <arg name="roi_y_max" default="3.0" />
+  <arg name="ground_z_max" default="0.15" />
+  <arg name="person_z_min" default="0.2" />
+  <arg name="person_z_max" default="2.2" />
+
+  <arg name="grid_resolution" default="0.12" />
+  <arg name="cloud_stride" default="4" />
+  <arg name="cluster_min_points" default="30" />
+  <arg name="min_points_per_cell" default="1" />
+  <arg name="init_confirmations" default="3" />
+  <arg name="track_timeout" default="0.7" />
+  <arg name="prediction_horizon" default="2.0" />
+  <arg name="prediction_dt" default="0.2" />
+  <arg name="process_noise" default="1.0" />
+  <arg name="measurement_noise" default="0.08" />
+
+  <node pkg="person_tracking" type="person_tracker_node.py" name="person_tracker" output="screen">
+    <param name="tracking_frame" value="$(arg tracking_frame)" />
+    <param name="cloud_topic" value="$(arg cloud_topic)" />
+
+    <param name="roi_x_min" value="$(arg roi_x_min)" />
+    <param name="roi_x_max" value="$(arg roi_x_max)" />
+    <param name="roi_y_min" value="$(arg roi_y_min)" />
+    <param name="roi_y_max" value="$(arg roi_y_max)" />
+    <param name="ground_z_max" value="$(arg ground_z_max)" />
+    <param name="person_z_min" value="$(arg person_z_min)" />
+    <param name="person_z_max" value="$(arg person_z_max)" />
+
+    <param name="grid_resolution" value="$(arg grid_resolution)" />
+    <param name="cloud_stride" value="$(arg cloud_stride)" />
+    <param name="cluster_min_points" value="$(arg cluster_min_points)" />
+    <param name="min_points_per_cell" value="$(arg min_points_per_cell)" />
+    <param name="init_confirmations" value="$(arg init_confirmations)" />
+    <param name="track_timeout" value="$(arg track_timeout)" />
+    <param name="prediction_horizon" value="$(arg prediction_horizon)" />
+    <param name="prediction_dt" value="$(arg prediction_dt)" />
+    <param name="process_noise" value="$(arg process_noise)" />
+    <param name="measurement_noise" value="$(arg measurement_noise)" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="person_tracking_rviz"
+        args="-d $(arg rviz_config)"
+        output="screen" />
+</launch>
