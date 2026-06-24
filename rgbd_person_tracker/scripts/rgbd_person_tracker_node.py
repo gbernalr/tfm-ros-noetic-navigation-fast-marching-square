@@ -6,12 +6,14 @@ import time
 import message_filters
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
+import tf2_ros
 
 from rgbd_person_tracker.pose_detector import PoseDetector
 from rgbd_person_tracker.reference_selector import select_reference_point
 from rgbd_person_tracker.depth_utils import robust_depth, backproject_to_3d
 from rgbd_person_tracker.ground_projector import GroundProjector
 from rgbd_person_tracker.kalman_tracker import Detection, TrackerManager, build_measurement_cov
+from rgbd_person_tracker.msg import PersonTrack, PersonTrackArray
 from rgbd_person_tracker.visualizer import Visualizer
 
 
@@ -28,6 +30,7 @@ class RGBDPersonTrackerNode:
         min_hits = rospy.get_param("~min_hits_to_confirm", 3)
         q_pos = rospy.get_param("~kalman/q_pos", 0.05)
         q_vel = rospy.get_param("~kalman/q_vel", 0.20)
+        history_maxlen = int(rospy.get_param("~track_history_size", 200))
 
         mp_det_conf = rospy.get_param("~mediapipe/min_detection_confidence", 0.5)
         mp_trk_conf = rospy.get_param("~mediapipe/min_tracking_confidence", 0.5)
@@ -42,7 +45,10 @@ class RGBDPersonTrackerNode:
         self._frame_count = 0
 
         optical_frame = rospy.get_param("~optical_frame", "camera_depth_optical_frame")
-        world_frame = rospy.get_param("~world_frame", "world")
+        self.world_frame = rospy.get_param("~world_frame", "world")
+        self.output_frame = rospy.get_param("~output_frame", self.world_frame)
+        self.person_tracks_topic = rospy.get_param("~person_tracks_topic", "/person_tracks")
+        self.tf_timeout = float(rospy.get_param("~tf_timeout", 0.15))
 
         tv_w = rospy.get_param("~visualization/top_view_width", 500)
         tv_h = rospy.get_param("~visualization/top_view_height", 300)
@@ -73,8 +79,11 @@ class RGBDPersonTrackerNode:
 
         self.ground_projector = GroundProjector(
             optical_frame=optical_frame,
-            world_frame=world_frame,
+            world_frame=self.world_frame,
         )
+
+        self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
         self.tracker = TrackerManager(
             dt=1.0 / 15.0,
@@ -83,10 +92,11 @@ class RGBDPersonTrackerNode:
             min_hits_to_confirm=min_hits,
             q_pos=q_pos,
             q_vel=q_vel,
+            history_maxlen=history_maxlen,
         )
 
         self.visualizer = Visualizer(
-            world_frame=world_frame,
+            world_frame=self.world_frame,
             top_view_width=tv_w,
             top_view_height=tv_h,
             top_view_meters_x=tv_mx,
@@ -120,6 +130,10 @@ class RGBDPersonTrackerNode:
             [sub_rgb, sub_depth], queue_size=5, slop=0.1
         )
         self._sync.registerCallback(self._callback)
+
+        self.pub_tracks = rospy.Publisher(
+            self.person_tracks_topic, PersonTrackArray, queue_size=1
+        )
 
         rospy.loginfo("rgbd_person_tracker_node listo.")
 
@@ -177,6 +191,8 @@ class RGBDPersonTrackerNode:
         t1 = time.time()
         tracks = self.tracker.step(detections)
         t_trk = time.time() - t1
+
+        self._publish_tracks(tracks, stamp)
 
         # Visualizacion (solo si alguien escucha)
         t2 = time.time()
@@ -237,6 +253,81 @@ class RGBDPersonTrackerNode:
             detections.append(det)
 
         return detections
+
+    def _lookup_output_transform(self, stamp):
+        if self.output_frame == self.world_frame:
+            return None
+
+        lookup_stamp = stamp if stamp != rospy.Time() else rospy.Time(0)
+        return self.tf_buffer.lookup_transform(
+            self.output_frame,
+            self.world_frame,
+            lookup_stamp,
+            rospy.Duration(self.tf_timeout),
+        )
+
+    @staticmethod
+    def _yaw_from_quat(q):
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        return np.arctan2(siny_cosp, cosy_cosp)
+
+    def _transform_track_state(self, position, velocity, transform):
+        if transform is None:
+            return position.copy(), velocity.copy()
+
+        yaw = self._yaw_from_quat(transform.transform.rotation)
+        cos_yaw = np.cos(yaw)
+        sin_yaw = np.sin(yaw)
+
+        px = transform.transform.translation.x + cos_yaw * position[0] - sin_yaw * position[1]
+        py = transform.transform.translation.y + sin_yaw * position[0] + cos_yaw * position[1]
+        vx = cos_yaw * velocity[0] - sin_yaw * velocity[1]
+        vy = sin_yaw * velocity[0] + cos_yaw * velocity[1]
+        return np.array([px, py], dtype=np.float32), np.array([vx, vy], dtype=np.float32)
+
+    def _publish_tracks(self, tracks, stamp):
+        msg = PersonTrackArray()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self.output_frame
+
+        try:
+            transform = self._lookup_output_transform(stamp)
+        except Exception as exc:
+            rospy.logwarn_throttle(
+                2.0,
+                "No se pudo transformar tracks %s -> %s: %s",
+                self.world_frame,
+                self.output_frame,
+                exc,
+            )
+            self.pub_tracks.publish(msg)
+            return
+
+        hits_required = max(1, self.tracker.min_hits_to_confirm)
+        for tr in tracks:
+            if not tr.confirmed:
+                continue
+
+            pos_xy, vel_xy = self._transform_track_state(
+                tr.position,
+                tr.velocity,
+                transform,
+            )
+
+            track_msg = PersonTrack()
+            track_msg.track_id = tr.id
+            track_msg.position.x = float(pos_xy[0])
+            track_msg.position.y = float(pos_xy[1])
+            track_msg.position.z = 0.0
+            track_msg.velocity.x = float(vel_xy[0])
+            track_msg.velocity.y = float(vel_xy[1])
+            track_msg.velocity.z = 0.0
+            track_msg.confidence = min(1.0, float(tr.hits) / float(hits_required))
+            track_msg.confirmed = tr.confirmed
+            msg.tracks.append(track_msg)
+
+        self.pub_tracks.publish(msg)
 
     def run(self):
         rospy.spin()

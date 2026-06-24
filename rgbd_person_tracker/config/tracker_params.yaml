@@ -36,11 +36,16 @@ min_hits_to_confirm: 3               # frames para confirmar un track
 # ── Frames TF ───────────────────────────────────────────────
 optical_frame: camera_depth_optical_frame
 world_frame:   world
+output_frame:  world
 
 # ── Topics ──────────────────────────────────────────────────
 rgb_topic:         /camera/color/image_raw
 depth_topic:       /camera/depth/image_raw
 camera_info_topic: /camera/color/camera_info
+person_tracks_topic: /person_tracks
+
+# ── Publicación / tracker ───────────────────────────────────
+track_history_size: 200
 # ── Rendimiento ─────────────────────────────────────────
 process_every_n: 2                   # procesar 1 de cada N frames (Kalman predice en los demás)
 # ── Visualización — vista cenital ───────────────────────────

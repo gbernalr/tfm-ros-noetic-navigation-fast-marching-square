@@ -7,11 +7,15 @@
   <arg name="rviz"        default="true" />
   <arg name="rviz_config" default="$(find rgbd_person_tracker)/config/rgbd_tracker.rviz" />
   <arg name="params_file" default="$(find rgbd_person_tracker)/config/tracker_params.yaml" />
+  <arg name="output_frame" default="world" />
+  <arg name="person_tracks_topic" default="/person_tracks" />
 
   <!-- Nodo principal -->
   <node pkg="rgbd_person_tracker" type="rgbd_person_tracker_node.py"
         name="rgbd_person_tracker_node" output="screen">
     <rosparam file="$(arg params_file)" command="load" />
+    <param name="output_frame" value="$(arg output_frame)" />
+    <param name="person_tracks_topic" value="$(arg person_tracks_topic)" />
   </node>
 
   <!-- RViz (opcional) -->

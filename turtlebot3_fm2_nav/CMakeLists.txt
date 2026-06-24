@@ -8,9 +8,11 @@ project(turtlebot3_fm2_nav)
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   nav_msgs
+  rgbd_person_tracker
   rospy
   sensor_msgs
   std_msgs
+  tf2_geometry_msgs
   tf2_ros
 )
 
@@ -25,7 +27,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
   # INCLUDE_DIRS include
   # LIBRARIES turtlebot3_fm2_nav
-  CATKIN_DEPENDS geometry_msgs nav_msgs rospy sensor_msgs std_msgs tf2_ros
+  CATKIN_DEPENDS geometry_msgs nav_msgs rgbd_person_tracker rospy sensor_msgs std_msgs tf2_geometry_msgs tf2_ros
   # DEPENDS system_lib
 )
 

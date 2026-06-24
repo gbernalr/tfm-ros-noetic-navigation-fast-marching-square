@@ -1,0 +1,5 @@
+uint32 track_id
+geometry_msgs/Point position
+geometry_msgs/Vector3 velocity
+float32 confidence
+bool confirmed

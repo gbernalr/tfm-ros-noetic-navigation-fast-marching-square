@@ -9,6 +9,8 @@ Asociación de detecciones a tracks vía algoritmo Húngaro
 (scipy.optimize.linear_sum_assignment).
 """
 
+from collections import deque
+
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
@@ -48,13 +50,14 @@ class Track:
     """Track individual con estado Kalman."""
 
     def __init__(self, track_id: int, xy_initial: np.ndarray, dt: float,
-                 q_pos: float = 0.05, q_vel: float = 0.20):
+                 q_pos: float = 0.05, q_vel: float = 0.20,
+                 history_maxlen: int = 200):
         self.id = track_id
         self.age = 1
         self.hits = 1
         self.misses = 0
         self.confirmed = False
-        self.history = [xy_initial.copy()]
+        self.history = deque([xy_initial.copy()], maxlen=history_maxlen)
         self.last_ref_type = None
 
         # ── Kalman ──
@@ -145,6 +148,7 @@ class TrackerManager:
         min_hits_to_confirm: int = 3,
         q_pos: float = 0.05,
         q_vel: float = 0.20,
+        history_maxlen: int = 200,
     ):
         self.dt = dt
         self.max_assoc_dist = max_assoc_dist
@@ -152,6 +156,7 @@ class TrackerManager:
         self.min_hits_to_confirm = min_hits_to_confirm
         self.q_pos = q_pos
         self.q_vel = q_vel
+        self.history_maxlen = history_maxlen
 
         self.tracks = []          # list[Track]
         self._next_id = 0
@@ -260,6 +265,7 @@ class TrackerManager:
                 dt=self.dt,
                 q_pos=self.q_pos,
                 q_vel=self.q_vel,
+                history_maxlen=self.history_maxlen,
             )
             tr.last_ref_type = det.ref_type
             self.tracks.append(tr)

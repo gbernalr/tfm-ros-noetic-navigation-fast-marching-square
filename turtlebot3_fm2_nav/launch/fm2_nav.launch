@@ -51,7 +51,12 @@
   <!-- =========================
        FM2 NODES (COSTMAP + PLANNER + CONTROLLER)
        ========================= -->
-  <node pkg="turtlebot3_fm2_nav" type="fm2_costmap_node"    name="fm2_costmap_node"    output="screen"/>
+     <node pkg="turtlebot3_fm2_nav" type="fm2_costmap_node"    name="fm2_costmap_node"    output="screen">
+          <param name="person_tracks_topic" value="/person_tracks"/>
+          <param name="person_radius" value="0.35"/>
+          <param name="person_inflate" value="2"/>
+          <param name="person_prediction_enabled" value="true"/>
+     </node>
   <node pkg="turtlebot3_fm2_nav" type="fm2_planner_node"    name="fm2_planner_node"    output="screen"/>
   <node pkg="turtlebot3_fm2_nav" type="fm2_controller_node" name="fm2_controller_node" output="screen"/>
 
