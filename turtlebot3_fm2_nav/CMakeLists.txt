@@ -52,6 +52,8 @@ catkin_install_python(
     src/simple_nav_node.py
     src/fm2_planner_node.py
     src/fm2_controller_node.py
+    src/person_patrol_mover.py
+    src/person_track_publisher.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

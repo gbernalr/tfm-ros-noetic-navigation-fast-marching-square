@@ -28,6 +28,8 @@ class FM2CostmapNode:
         self.person_prediction_horizons = rospy.get_param(
             "~person_prediction_horizons", [0.5, 1.0, 1.5, 2.0]
         )
+        self.person_tracks_timeout = float(rospy.get_param("~person_tracks_timeout", 0.6))
+        self.person_max_speed_warn = float(rospy.get_param("~person_max_speed_warn", 1.5))
 
         # Memoria de obstáculos dinámicos (en número de scans)
         self.dynamic_memory = int(rospy.get_param("~dynamic_memory", 15))
@@ -44,6 +46,7 @@ class FM2CostmapNode:
         # >0 => hay obstáculo dinámico reciente
         self.dynamic_grid = None      # np.array uint8 (0 libre, >0 obstáculo reciente)
         self.person_grid = None       # np.array uint8 (0 libre, 100 persona)
+        self.last_person_msg_time = None
 
         # Posición del robot (en celdas de grid)
         self.robot_ix = None
@@ -69,11 +72,14 @@ class FM2CostmapNode:
 
         self.pub_costmap = rospy.Publisher("fm2_costmap/costmap",
                                            OccupancyGrid, queue_size=1, latch=True)
+        self.person_timeout_timer = rospy.Timer(
+            rospy.Duration(0.1), self._person_timeout_cb
+        )
 
         # Para no volcar costmap combinado a lo loco
         self._last_costmap_dump_time = rospy.Time(0)
 
-        rospy.loginfo("fm2_costmap_node listo. Esperando /map, /scan y /fm2_path...")
+        rospy.loginfo("[fm2_costmap_node.py::__init__] listo. Esperando /map, /scan y /fm2_path...")
 
     # ---------- Callbacks ----------
     def cb_map(self, msg: OccupancyGrid):
@@ -101,7 +107,7 @@ class FM2CostmapNode:
         free_ratio = float((self.static_grid == 0).sum()) / (self.map_w * self.map_h)
         occ_ratio  = float((self.static_grid == 100).sum()) / (self.map_w * self.map_h)
 
-        rospy.loginfo("Mapa estático cargado: %.1f%% libre, %.1f%% obstáculo.",
+        rospy.loginfo("[fm2_costmap_node.py::cb_map] Mapa estático cargado: %.1f%% libre, %.1f%% obstáculo.",
                       100.0 * free_ratio, 100.0 * occ_ratio)
 
         self.publish_costmap()
@@ -109,6 +115,8 @@ class FM2CostmapNode:
     def cb_persons(self, msg: PersonTrackArray):
         if self.static_grid is None:
             return
+
+        self.last_person_msg_time = rospy.Time.now()
 
         if self.person_grid is None:
             self.person_grid = np.zeros((self.map_h, self.map_w), dtype=np.uint8)
@@ -126,21 +134,60 @@ class FM2CostmapNode:
             if px is None:
                 continue
 
+            speed = math.hypot(vx, vy)
+            predicted_pts = []
+
             self._paint_disc(px, py, total_radius)
 
-            if not self.person_prediction_enabled:
-                continue
+            if self.person_prediction_enabled:
+                for horizon in self.person_prediction_horizons:
+                    try:
+                        t = float(horizon)
+                    except (TypeError, ValueError):
+                        continue
+                    if t <= 0.0:
+                        continue
+                    pred_x, pred_y = px + vx * t, py + vy * t
+                    predicted_pts.append((t, pred_x, pred_y))
+                    self._paint_disc(pred_x, pred_y, total_radius)
 
-            for horizon in self.person_prediction_horizons:
-                try:
-                    t = float(horizon)
-                except (TypeError, ValueError):
-                    continue
-                if t <= 0.0:
-                    continue
-                self._paint_disc(px + vx * t, py + vy * t, total_radius)
+            rospy.loginfo_throttle(
+                1.0,
+                "[fm2_costmap_node.py::cb_persons] track_id=%d pos=(%.2f,%.2f) vel=(%.2f,%.2f)|%.2fm/s predicciones=%s",
+                track.track_id, px, py, vx, vy, speed,
+                [(round(t, 1), round(x, 2), round(y, 2)) for t, x, y in predicted_pts],
+            )
+
+            if speed > self.person_max_speed_warn:
+                rospy.logwarn(
+                    "[fm2_costmap_node.py::cb_persons] PROYECCION DISPARADA para track_id=%d: "
+                    "vel=%.2fm/s (umbral=%.2f) pos=(%.2f,%.2f) -> punto predicho mas lejano=%s",
+                    track.track_id, speed, self.person_max_speed_warn, px, py,
+                    predicted_pts[-1] if predicted_pts else None,
+                )
 
         self.publish_costmap()
+
+    def _person_timeout_cb(self, _event):
+        if self.static_grid is None or self.person_grid is None:
+            return
+        if self.last_person_msg_time is None:
+            return
+        if self.person_tracks_timeout <= 0.0:
+            return
+
+        age = (rospy.Time.now() - self.last_person_msg_time).to_sec()
+        if age <= self.person_tracks_timeout:
+            return
+
+        if np.any(self.person_grid > 0):
+            self.person_grid.fill(0)
+            self.publish_costmap()
+            rospy.loginfo_throttle(
+                2.0,
+                "[fm2_costmap_node.py::_person_timeout_cb] Limpiando capa de personas por timeout (%.2fs sin /person_tracks)",
+                age,
+            )
 
     def cb_scan(self, scan: LaserScan):
         if self.static_grid is None:
@@ -155,7 +202,7 @@ class FM2CostmapNode:
                 rospy.Duration(0.1)
             )
         except Exception as e:
-            rospy.logwarn_throttle(2.0, "TF %s -> %s no disponible: %s",
+            rospy.logwarn_throttle(2.0, "[fm2_costmap_node.py::cb_scan] TF %s -> %s no disponible: %s",
                                    self.frame_map, scan.header.frame_id, e)
             return
 
@@ -214,10 +261,10 @@ class FM2CostmapNode:
                 dyn = cv2.dilate(dyn, kernel, iterations=1)
                 self.dynamic_grid[dyn == 1] = self.dynamic_memory
             except ImportError:
-                rospy.logwarn_throttle(10.0, "OpenCV no disponible, dynamic_inflate ignorado.")
+                rospy.logwarn_throttle(10.0, "[fm2_costmap_node.py::cb_scan] OpenCV no disponible, dynamic_inflate ignorado.")
 
         dyn_count = int((self.dynamic_grid > 0).sum())
-        rospy.loginfo_throttle(1.0, "Celdas dinámicas ocupadas (memoria >0): %d", dyn_count)
+        rospy.loginfo_throttle(1.0, "[fm2_costmap_node.py::cb_scan] Celdas dinámicas ocupadas (memoria >0): %d", dyn_count)
 
         self.publish_costmap()
 
@@ -265,7 +312,7 @@ class FM2CostmapNode:
         try:
             tf = self._lookup_transform(source_frame, stamp)
         except Exception as exc:
-            rospy.logwarn_throttle(2.0, "TF %s -> %s no disponible para tracks: %s",
+            rospy.logwarn_throttle(2.0, "[fm2_costmap_node.py::_track_to_map] TF %s -> %s no disponible para tracks: %s",
                                    self.frame_map, source_frame, exc)
             return None, None, None, None
 

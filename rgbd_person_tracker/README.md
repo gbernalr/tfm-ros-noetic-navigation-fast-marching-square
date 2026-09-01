@@ -160,8 +160,7 @@ Publica tres topics de visualización:
 |-------------------------------------------|---------------------------|-------------------------------------|
 | `~image_annotated`                         | `sensor_msgs/Image`       | Imagen RGB con anotaciones          |
 | `~top_view`                                | `sensor_msgs/Image`       | Vista cenital de trayectorias       |
-| `~markers`                                 | `MarkerArray`             | Markers 3D para RViz               |
-
+| `~markers`                                 | `MarkerArray`             | Markers 3D para RViz               || `/person_tracks`                            | `rgbd_person_tracker/PersonTrackArray` | Tracks confirmados (posición, velocidad, confianza) para consumo externo (p. ej. `turtlebot3_fm2_nav`) |
 ---
 
 ## Parámetros configurables
@@ -189,6 +188,9 @@ Todos los parámetros se cargan desde `config/tracker_params.yaml` vía el servi
 | `process_every_n`             | 2       | Procesar detección cada N frames (Kalman predice el resto) |
 | `optical_frame`               | `camera_depth_optical_frame` | Frame TF del sensor óptico              |
 | `world_frame`                 | `world` | Frame TF de referencia global                              |
+| `output_frame`                | `world` | Frame de salida de `/person_tracks` (transforma vía TF2 si difiere de `world_frame`) |
+| `person_tracks_topic`         | `/person_tracks` | Topic donde se publican los tracks confirmados               |
+| `track_history_size`          | 200     | Longitud máxima del historial guardado por track (`deque`)  |
 
 ---
 
@@ -340,11 +342,14 @@ rgbd_person_tracker/
 ├── package.xml
 ├── setup.py
 ├── README.md
+├── msg/
+│   ├── PersonTrack.msg          # track_id, position, velocity, confidence, confirmed
+│   └── PersonTrackArray.msg     # header + PersonTrack[]
 ├── config/
 │   ├── tracker_params.yaml      # Parámetros configurables
 │   └── rgbd_tracker.rviz        # Configuración de RViz
 ├── launch/
-│   ├── tracker.launch           # Solo el nodo tracker
+│   ├── tracker.launch           # Solo el nodo tracker (permite override de output_frame/person_tracks_topic)
 │   └── sim_tracker.launch       # Gazebo + tracker + RViz
 ├── worlds/
 │   └── tracker_scene.world      # Escena Gazebo: actor walk.dae en figura de ocho
@@ -361,3 +366,32 @@ rgbd_person_tracker/
         ├── kalman_tracker.py     # Kalman + Hungarian + TrackerManager
         └── visualizer.py         # Publicadores de visualización ROS
 ```
+
+---
+
+## Integración con `turtlebot3_fm2_nav` (estado actual)
+
+El paquete `turtlebot3_fm2_nav` consume `/person_tracks` para inyectar personas detectadas (o simuladas) como obstáculos dinámicos en su costmap de planificación FM2. Resumen del estado de esta integración:
+
+### Pipeline
+
+```
+rgbd_person_tracker_node.py ──/person_tracks──► fm2_costmap_node.py ──fm2_costmap/costmap──► fm2_planner_node.py ──fm2_path──► fm2_controller_node.py
+```
+
+- `fm2_costmap_node.py` pinta un disco de ocupación en la posición actual de cada track confirmado, más discos adicionales en las posiciones **predichas** a 0.5/1.0/1.5/2.0s (`person_prediction_horizons`) asumiendo velocidad constante.
+- Si no llega ningún mensaje nuevo en `/person_tracks` durante `person_tracks_timeout` (0.6s por defecto), la capa de personas se limpia automáticamente del costmap (evita obstáculos "fantasma").
+- `fm2_planner_node.py` replanifica cada `replan_period` (1s por defecto) o si el robot se desvía más de `replan_offpath` (0.6m) de la ruta vigente, lo que le permite reaccionar a personas en movimiento con esa latencia máxima.
+
+### Demo con persona en movimiento
+
+Se añadió `turtlebot3_fm2_nav/launch/fm2_nav_moving_person.launch`, que reutiliza el mundo de `turtlebot3_fm2_nav` y añade:
+
+- `person_patrol_mover.py`: mueve el modelo `person_target` (de `rgbd_sim`) en bucle por una lista de waypoints vía `/gazebo/set_model_state`.
+- `person_track_publisher.py`: lee `/gazebo/model_states`, calcula velocidad por diferencia finita, y publica esa posición/velocidad "ground-truth" como `/person_tracks` (frame `map`), sin depender de la cámara RGB-D real. Es un sustituto de percepción "perfecta" pensado solo para validar la reacción de FM2 ante obstáculos móviles.
+
+**Caveat conocido (sin resolver)**: en pruebas se detectó que `/gazebo/model_states` se publica a una frecuencia mucho mayor que la física del mundo (~cada 1ms), por lo que el filtro `min_dt` de `person_track_publisher.py` descarta casi todos los ciclos y la velocidad estimada puede quedar "congelada" en un valor antiguo durante decenas de segundos, dando lugar a predicciones desalineadas con el movimiento real (más notorio en los cambios de dirección del patrullaje). Pendiente de corregir estimando velocidad sobre una ventana de tiempo fija en vez de por-callback.
+
+### Logging
+
+Los mensajes de `rospy.logwarn`/`rospy.loginfo` añadidos para diagnóstico siguen el formato `[fichero.py::metodo] mensaje`, para poder identificar rápidamente su origen en los logs (`~/.ros/log/latest/<nodo>-N.log`). Aplica a `fm2_costmap_node.py`, `person_track_publisher.py` y `person_patrol_mover.py`.

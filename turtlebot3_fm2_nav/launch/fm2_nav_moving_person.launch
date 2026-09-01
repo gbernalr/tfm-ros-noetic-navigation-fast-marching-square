@@ -1,0 +1,114 @@
+<launch>
+  <!-- =========================================================
+       fm2_nav_moving_person.launch
+       Igual que fm2_nav.launch (Turtlebot3 + map + AMCL + FM2),
+       pero añade una persona (modelo de rgbd_sim) patrullando el
+       escenario, y un publicador "ground-truth" que la expone en
+       /person_tracks para que el costmap FM2 la evite.
+       ========================================================= -->
+
+  <!-- =========================
+       ARGUMENTOS
+       ========================= -->
+  <arg name="model" default="$(env TURTLEBOT3_MODEL)" doc="model type [burger, waffle, waffle_pi]"/>
+  <arg name="map_file" default="$(find turtlebot3_navigation)/maps/map.yaml"/>
+  <arg name="open_rviz" default="true"/>
+
+  <!-- Posición inicial del robot en Gazebo -->
+  <arg name="x_pos" default="-2.0"/>
+  <arg name="y_pos" default="-0.5"/>
+  <arg name="z_pos" default="0.0"/>
+
+  <!-- Posición inicial y velocidad de la persona -->
+  <arg name="person_x" default="1.0"/>
+  <arg name="person_y" default="1.0"/>
+  <arg name="person_speed" default="0.3"/>
+
+  <!-- Path de modelos de rgbd_sim (para el modelo de persona) -->
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find rgbd_sim)/models:$(optenv GAZEBO_MODEL_PATH)" />
+
+  <!-- =========================
+       GAZEBO + MUNDO
+       ========================= -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find turtlebot3_gazebo)/worlds/turtlebot3_world.world"/>
+    <arg name="paused"     value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui"        value="true"/>
+    <arg name="headless"   value="false"/>
+    <arg name="debug"      value="false"/>
+  </include>
+
+  <!-- Descripción del robot (URDF) -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro" />
+
+  <!-- Spawnear el robot -->
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf"
+        args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -param robot_description" />
+
+  <!-- Spawnear la persona -->
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_person_target"
+        args="-file $(find rgbd_sim)/models/person_target/model.sdf -sdf -model person_target
+              -x $(arg person_x) -y $(arg person_y) -z 0"
+        output="screen" />
+
+  <!-- =========================
+       TURTLEBOT3 (BRINGUP)
+       ========================= -->
+  <include file="$(find turtlebot3_bringup)/launch/turtlebot3_remote.launch">
+    <arg name="model" value="$(arg model)" />
+  </include>
+
+  <!-- =========================
+       MAP SERVER
+       ========================= -->
+  <node pkg="map_server" type="map_server" name="map_server" args="$(arg map_file)"/>
+
+  <!-- =========================
+       AMCL
+       ========================= -->
+  <include file="$(find turtlebot3_navigation)/launch/amcl.launch"/>
+
+  <!-- =========================
+       PERSONA: patrulla + publicador ground-truth
+       ========================= -->
+  <node pkg="turtlebot3_fm2_nav" type="person_patrol_mover.py" name="person_patrol_mover" output="screen">
+    <param name="model_name" value="person_target"/>
+    <param name="speed" value="$(arg person_speed)"/>
+    <rosparam param="waypoints">
+      - [1.0, 1.0]
+      - [1.0, -1.0]
+      - [-1.0, -1.0]
+      - [-1.0, 1.0]
+    </rosparam>
+  </node>
+
+  <node pkg="turtlebot3_fm2_nav" type="person_track_publisher.py" name="person_track_publisher" output="screen">
+    <param name="person_model_name" value="person_target"/>
+    <param name="output_frame" value="map"/>
+  </node>
+
+  <!-- =========================
+       FM2 NODES (COSTMAP + PLANNER + CONTROLLER)
+       ========================= -->
+  <node pkg="turtlebot3_fm2_nav" type="fm2_costmap_node.py" name="fm2_costmap_node" output="screen">
+    <param name="person_tracks_topic" value="/person_tracks"/>
+    <param name="person_radius" value="0.35"/>
+    <param name="person_inflate" value="2"/>
+    <param name="person_prediction_enabled" value="true"/>
+    <param name="person_tracks_timeout" value="0.6"/>
+  </node>
+  <node pkg="turtlebot3_fm2_nav" type="fm2_planner_node.py"    name="fm2_planner_node"    output="screen"/>
+  <node pkg="turtlebot3_fm2_nav" type="fm2_controller_node.py" name="fm2_controller_node" output="screen"/>
+
+  <!-- =========================
+       RVIZ (OPCIONAL)
+       ========================= -->
+  <group if="$(arg open_rviz)">
+    <node pkg="rviz" type="rviz" name="rviz" required="true"
+          args="-d $(find turtlebot3_navigation)/rviz/turtlebot3_navigation.rviz"/>
+  </group>
+
+</launch>
