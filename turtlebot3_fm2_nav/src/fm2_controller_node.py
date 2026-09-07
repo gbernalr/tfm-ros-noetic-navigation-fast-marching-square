@@ -18,6 +18,15 @@ class FM2Controller:
         self.lookahead_dist = float(rospy.get_param("~lookahead", 0.35))
         self.v_lin = float(rospy.get_param("~v_lin", 0.22))
         self.v_ang_max = float(rospy.get_param("~v_ang_max", 1.5))
+        # No se avanza mientras el objetivo queda claramente de lado. Mezclar
+        # una velocidad lineal pequeña con un giro máximo crea círculos de
+        # pocos centímetros de radio en el modelo diferencial.
+        self.heading_align_threshold = float(
+            rospy.get_param("~heading_align_threshold", 0.35)
+        )
+        self.align_v_ang_max = float(
+            rospy.get_param("~align_v_ang_max", 0.8)
+        )
         self.goal_tolerance = float(rospy.get_param("~goal_tolerance", 0.08))
         self.rate_hz = int(rospy.get_param("~rate", 20))
 
@@ -94,7 +103,17 @@ class FM2Controller:
 
         if pts:
             self.path_world = pts
-            self.path_idx = 0
+            # El planner replantea cada 0.5 s. Empezar siempre en el índice 0
+            # hace que el controlador retroceda al inicio de la ruta en cada
+            # actualización; continuar desde el punto más cercano evita esa
+            # oscilación.
+            if self.last_pose is not None:
+                x, y, _ = self.last_pose
+                self.path_idx = int(np.argmin([
+                    np.hypot(px - x, py - y) for px, py in pts
+                ]))
+            else:
+                self.path_idx = 0
             self.mode_align = False
             rospy.loginfo(
                 "FM2 Controller: nueva ruta recibida con %d puntos", len(pts)
@@ -155,10 +174,25 @@ class FM2Controller:
         ang_ref = math.atan2(dy, dx)
         e_yaw = self._wrap_to_pi(ang_ref - yaw)
 
-        fact = max(0.2, 1.0 - min(abs(e_yaw) / 1.2, 0.8))
-        v = self.v_lin * fact
-
-        w = float(np.clip(self.k_theta * e_yaw, -self.v_ang_max, self.v_ang_max))
+        if abs(e_yaw) > self.heading_align_threshold:
+            # El siguiente punto está demasiado lateral: primero orientar el
+            # robot. El límite más bajo evita sobrepasar el rumbo por inercia.
+            v = 0.0
+            w = float(np.clip(
+                self.k_theta * e_yaw,
+                -self.align_v_ang_max,
+                self.align_v_ang_max,
+            ))
+        else:
+            # Ya orientado: se conserva la reducción progresiva al trazar
+            # curvas, sin convertir una curva cerrada en un giro sobre sitio.
+            fact = max(0.2, 1.0 - min(abs(e_yaw) / 1.2, 0.8))
+            v = self.v_lin * fact
+            w = float(np.clip(
+                self.k_theta * e_yaw,
+                -self.v_ang_max,
+                self.v_ang_max,
+            ))
 
         twist = Twist()
         twist.linear.x = v

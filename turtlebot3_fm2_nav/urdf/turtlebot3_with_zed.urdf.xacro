@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<!-- Robot estándar al que se añade una RGB-D ZED simulada, fija a base_link. -->
+<robot name="turtlebot3_with_zed" xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:arg name="model" default="burger"/>
+  <xacro:arg name="zed_mount_x" default="0.12"/>
+  <xacro:arg name="zed_mount_y" default="0.0"/>
+  <xacro:arg name="zed_mount_z" default="0.25"/>
+
+  <!-- Sirve tanto para burger como para waffle. -->
+  <xacro:include filename="$(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro"/>
+
+  <!-- Masa despreciable y sin colisión: el sensor no cambia la dinámica. -->
+  <link name="zed_sim_camera_frame">
+    <inertial>
+      <mass value="0.001"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.000001" iyz="0" izz="0.000001"/>
+    </inertial>
+    <visual>
+      <geometry><box size="0.18 0.12 0.05"/></geometry>
+      <material name="zed_black"><color rgba="0.05 0.05 0.05 1"/></material>
+    </visual>
+  </link>
+
+  <joint name="base_link_to_zed_sim" type="fixed">
+    <parent link="base_link"/>
+    <child link="zed_sim_camera_frame"/>
+    <origin xyz="$(arg zed_mount_x) $(arg zed_mount_y) $(arg zed_mount_z)" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Convención óptica ROS: z hacia delante, x a la derecha, y hacia abajo. -->
+  <link name="zed_sim_camera_optical_frame"/>
+  <joint name="zed_sim_to_optical" type="fixed">
+    <parent link="zed_sim_camera_frame"/>
+    <child link="zed_sim_camera_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
+  </joint>
+
+  <gazebo reference="zed_sim_camera_frame">
+    <sensor name="zed_sim_depth" type="depth">
+      <always_on>true</always_on>
+      <!-- Perfil ligero para Gazebo Classic: suficiente para inspeccionar
+           RGB y profundidad, pero sin colapsar el tiempo real del simulador. -->
+      <update_rate>5</update_rate>
+      <visualize>false</visualize>
+      <camera>
+        <horizontal_fov>1.919862</horizontal_fov>
+        <image><width>424</width><height>240</height><format>R8G8B8</format></image>
+        <clip><near>0.3</near><far>12.0</far></clip>
+      </camera>
+      <plugin name="zed_sim_camera_plugin" filename="libgazebo_ros_openni_kinect.so">
+        <baseline>0.12</baseline>
+        <alwaysOn>true</alwaysOn>
+        <updateRate>0.0</updateRate>
+        <cameraName>zed_sim</cameraName>
+        <frameName>zed_sim_camera_optical_frame</frameName>
+        <imageTopicName>rgb/image_rect_color</imageTopicName>
+        <cameraInfoTopicName>rgb/camera_info</cameraInfoTopicName>
+        <depthImageTopicName>depth/depth_registered</depthImageTopicName>
+        <depthImageCameraInfoTopicName>depth/camera_info</depthImageCameraInfoTopicName>
+        <pointCloudTopicName>point_cloud/cloud_registered</pointCloudTopicName>
+        <pointCloudCutoff>0.3</pointCloudCutoff>
+        <pointCloudCutoffMax>12.0</pointCloudCutoffMax>
+      </plugin>
+    </sensor>
+  </gazebo>
+</robot>

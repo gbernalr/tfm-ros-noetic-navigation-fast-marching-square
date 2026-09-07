@@ -13,16 +13,26 @@
   <arg name="model" default="$(env TURTLEBOT3_MODEL)" doc="model type [burger, waffle, waffle_pi]"/>
   <arg name="map_file" default="$(find turtlebot3_navigation)/maps/map.yaml"/>
   <arg name="open_rviz" default="true"/>
+  <arg name="simulate_sensor_noise" default="false"
+       doc="activa ruido, latencia y pérdidas en el Body Tracking simulado"/>
 
   <!-- Posición inicial del robot en Gazebo -->
   <arg name="x_pos" default="-2.0"/>
   <arg name="y_pos" default="-0.5"/>
   <arg name="z_pos" default="0.0"/>
+  <arg name="yaw" default="0.0"/>
 
   <!-- Posición inicial y velocidad de la persona -->
   <arg name="person_x" default="1.0"/>
   <arg name="person_y" default="1.0"/>
   <arg name="person_speed" default="0.3"/>
+
+  <!-- Montaje lógico de la futura ZED respecto al robot. En esta iteración
+       solo existe su frame TF: no se modifica el modelo físico ni se usa
+       ninguna detección basada en la cámara. -->
+  <arg name="zed_mount_x" default="0.12"/>
+  <arg name="zed_mount_y" default="0.0"/>
+  <arg name="zed_mount_z" default="0.25"/>
 
   <!-- Path de modelos de rgbd_sim (para el modelo de persona) -->
   <env name="GAZEBO_MODEL_PATH"
@@ -40,13 +50,17 @@
     <arg name="debug"      value="false"/>
   </include>
 
-  <!-- Descripción del robot (URDF) -->
+  <!-- El estado/TF ROS sigue usando el robot estándar. Esta segunda
+       descripción se utiliza exclusivamente para spawnear en Gazebo el
+       mismo TurtleBot con el sensor ZED fijo, para burger y waffle. -->
   <param name="robot_description"
          command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro" />
+  <param name="zed_robot_description"
+         command="$(find xacro)/xacro --inorder $(find turtlebot3_fm2_nav)/urdf/turtlebot3_with_zed.urdf.xacro model:=$(arg model) zed_mount_x:=$(arg zed_mount_x) zed_mount_y:=$(arg zed_mount_y) zed_mount_z:=$(arg zed_mount_z)" />
 
   <!-- Spawnear el robot -->
   <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf"
-        args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -param robot_description" />
+        args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -Y $(arg yaw) -param zed_robot_description" />
 
   <!-- Spawnear la persona -->
   <node pkg="gazebo_ros" type="spawn_model" name="spawn_person_target"
@@ -61,6 +75,12 @@
     <arg name="model" value="$(arg model)" />
   </include>
 
+  <!-- El frame sigue al TurtleBot porque su padre es base_link. -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="zed_sim_frame"
+        args="$(arg zed_mount_x) $(arg zed_mount_y) $(arg zed_mount_z) 0 0 0 1 base_link zed_sim_camera_frame"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="zed_sim_optical_frame"
+        args="0 0 0 -0.5 0.5 -0.5 0.5 zed_sim_camera_frame zed_sim_camera_optical_frame"/>
+
   <!-- =========================
        MAP SERVER
        ========================= -->
@@ -70,9 +90,15 @@
        AMCL
        ========================= -->
   <include file="$(find turtlebot3_navigation)/launch/amcl.launch"/>
+  <node pkg="turtlebot3_fm2_nav" type="initial_pose_publisher.py"
+        name="initial_pose_publisher" output="screen">
+    <param name="x" value="$(arg x_pos)"/>
+    <param name="y" value="$(arg y_pos)"/>
+    <param name="yaw" value="$(arg yaw)"/>
+  </node>
 
   <!-- =========================
-       PERSONA: patrulla + publicador ground-truth
+       PERSONA: patrulla + Body Tracking ZED simulado
        ========================= -->
   <node pkg="turtlebot3_fm2_nav" type="person_patrol_mover.py" name="person_patrol_mover" output="screen">
     <param name="model_name" value="person_target"/>
@@ -85,9 +111,27 @@
     </rosparam>
   </node>
 
-  <node pkg="turtlebot3_fm2_nav" type="person_track_publisher.py" name="person_track_publisher" output="screen">
-    <param name="person_model_name" value="person_target"/>
+  <node pkg="turtlebot3_fm2_nav" type="zed_body_tracking_sim_node.py"
+        name="zed_body_tracking_sim_node" output="screen">
+    <param name="person_tracks_topic" value="/person_tracks"/>
     <param name="output_frame" value="map"/>
+    <param name="camera_frame" value="zed_sim_camera_frame"/>
+    <rosparam param="person_model_prefixes">[person_target, person_]</rosparam>
+    <!-- Salida de Body Tracking: visión, frecuencia, ruido y latencia
+         moderados, sin cambiar la física ni la navegación del TurtleBot. -->
+    <param name="horizontal_fov_deg" value="110.0"/>
+    <param name="min_range" value="0.5"/>
+    <param name="max_range" value="8.0"/>
+    <param name="sample_rate" value="15.0"/>
+    <param name="simulate_sensor_noise" value="$(arg simulate_sensor_noise)" type="bool"/>
+    <param name="detection_probability" value="0.96"/>
+    <param name="distance_probability_drop" value="0.35"/>
+    <param name="occlusion_probability" value="0.05"/>
+    <param name="position_noise_std" value="0.06"/>
+    <param name="velocity_noise_std" value="0.08"/>
+    <param name="latency" value="0.10"/>
+    <param name="tracking_timeout" value="0.50"/>
+    <param name="random_seed" value="7"/>
   </node>
 
   <!-- =========================
@@ -95,12 +139,33 @@
        ========================= -->
   <node pkg="turtlebot3_fm2_nav" type="fm2_costmap_node.py" name="fm2_costmap_node" output="screen">
     <param name="person_tracks_topic" value="/person_tracks"/>
-    <param name="person_radius" value="0.35"/>
-    <param name="person_inflate" value="2"/>
-    <param name="person_prediction_enabled" value="true"/>
+    <param name="person_radius" value="0.30"/>
+    <param name="person_inflate" value="1"/>
+    <!-- El predictor externo reemplaza la extrapolación local simple. -->
+    <param name="person_prediction_enabled" value="false"/>
+    <param name="person_predictions_enabled" value="true"/>
+    <param name="person_predictions_topic" value="/person_predictions"/>
+    <param name="person_predictions_timeout" value="0.6"/>
+    <param name="prediction_sigma_multiplier" value="1.0"/>
+    <param name="prediction_max_longitudinal_radius" value="0.90"/>
+    <param name="prediction_max_lateral_radius" value="0.55"/>
     <param name="person_tracks_timeout" value="0.6"/>
   </node>
-  <node pkg="turtlebot3_fm2_nav" type="fm2_planner_node.py"    name="fm2_planner_node"    output="screen"/>
+  <!-- Solo publica predicciones en esta fase; FM2 aún no las consume. -->
+  <node pkg="rgbd_person_tracker" type="trajectory_predictor_node.py"
+        name="trajectory_predictor_node" output="screen">
+    <param name="person_tracks_topic" value="/person_tracks"/>
+    <param name="person_predictions_topic" value="/person_predictions"/>
+  </node>
+  <node pkg="rgbd_person_tracker" type="trajectory_prediction_visualizer.py"
+        name="trajectory_prediction_visualizer" output="screen">
+    <param name="person_predictions_topic" value="/person_predictions"/>
+    <param name="markers_topic" value="/person_predictions/markers"/>
+    <param name="base_radius" value="0.35"/>
+  </node>
+  <node pkg="turtlebot3_fm2_nav" type="fm2_planner_node.py" name="fm2_planner_node" output="screen">
+    <param name="replan_period" value="0.5"/>
+  </node>
   <node pkg="turtlebot3_fm2_nav" type="fm2_controller_node.py" name="fm2_controller_node" output="screen"/>
 
   <!-- =========================
@@ -108,7 +173,7 @@
        ========================= -->
   <group if="$(arg open_rviz)">
     <node pkg="rviz" type="rviz" name="rviz" required="true"
-          args="-d $(find turtlebot3_navigation)/rviz/turtlebot3_navigation.rviz"/>
+          args="-d $(find turtlebot3_fm2_nav)/rviz/fm2_navigation.rviz"/>
   </group>
 
 </launch>

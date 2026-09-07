@@ -7,7 +7,7 @@ import math
 from nav_msgs.msg import OccupancyGrid, Path
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import TransformStamped
-from rgbd_person_tracker.msg import PersonTrackArray
+from rgbd_person_tracker.msg import PersonTrackArray, PersonPredictionArray
 
 
 class FM2CostmapNode:
@@ -24,6 +24,24 @@ class FM2CostmapNode:
         self.person_radius = float(rospy.get_param("~person_radius", 0.35))
         self.person_inflate = int(rospy.get_param("~person_inflate", 2))
         self.person_prediction_enabled = bool(rospy.get_param("~person_prediction_enabled", True))
+        self.person_predictions_topic = rospy.get_param(
+            "~person_predictions_topic", "/person_predictions"
+        )
+        self.person_predictions_enabled = bool(
+            rospy.get_param("~person_predictions_enabled", False)
+        )
+        self.prediction_sigma_multiplier = float(
+            rospy.get_param("~prediction_sigma_multiplier", 1.0)
+        )
+        self.prediction_max_longitudinal_radius = float(
+            rospy.get_param("~prediction_max_longitudinal_radius", 0.90)
+        )
+        self.prediction_max_lateral_radius = float(
+            rospy.get_param("~prediction_max_lateral_radius", 0.55)
+        )
+        self.person_predictions_timeout = float(
+            rospy.get_param("~person_predictions_timeout", 0.6)
+        )
         self.person_use_confirmed_only = bool(rospy.get_param("~person_use_confirmed_only", True))
         self.person_prediction_horizons = rospy.get_param(
             "~person_prediction_horizons", [0.5, 1.0, 1.5, 2.0]
@@ -47,6 +65,7 @@ class FM2CostmapNode:
         self.dynamic_grid = None      # np.array uint8 (0 libre, >0 obstáculo reciente)
         self.person_grid = None       # np.array uint8 (0 libre, 100 persona)
         self.last_person_msg_time = None
+        self.last_person_prediction_msg_time = None
 
         # Posición del robot (en celdas de grid)
         self.robot_ix = None
@@ -64,6 +83,10 @@ class FM2CostmapNode:
                                          self.cb_scan, queue_size=1)
         self.sub_persons = rospy.Subscriber(
             self.person_tracks_topic, PersonTrackArray, self.cb_persons, queue_size=1
+        )
+        self.sub_person_predictions = rospy.Subscriber(
+            self.person_predictions_topic, PersonPredictionArray,
+            self.cb_person_predictions, queue_size=1,
         )
 
         # Suscribirse al path de FM2
@@ -118,6 +141,11 @@ class FM2CostmapNode:
 
         self.last_person_msg_time = rospy.Time.now()
 
+        # Cuando hay predicciones recientes, estas ya contienen el disco de
+        # posición actual y la ocupación futura. No se superpone el fallback.
+        if self.person_predictions_enabled and self._predictions_are_fresh():
+            return
+
         if self.person_grid is None:
             self.person_grid = np.zeros((self.map_h, self.map_w), dtype=np.uint8)
         else:
@@ -167,6 +195,79 @@ class FM2CostmapNode:
                 )
 
         self.publish_costmap()
+
+    def cb_person_predictions(self, msg: PersonPredictionArray):
+        """Pinta posición actual y elipses futuras del predictor externo."""
+        if self.static_grid is None or not self.person_predictions_enabled:
+            return
+        # Antes de acumular historial el predictor publica un array vacío:
+        # conservamos el fallback de /person_tracks en ese caso.
+        if not msg.predictions:
+            return
+
+        self.last_person_prediction_msg_time = rospy.Time.now()
+        if self.person_grid is None:
+            self.person_grid = np.zeros((self.map_h, self.map_w), dtype=np.uint8)
+        else:
+            self.person_grid.fill(0)
+
+        current_radius = (
+            max(1, int(math.ceil(self.person_radius / self.map_res)))
+            + max(self.person_inflate, 0)
+        )
+        rendered = 0
+        for prediction in msg.predictions:
+            n_points = min(
+                len(prediction.positions), len(prediction.time_from_now),
+                len(prediction.sigma_major), len(prediction.sigma_minor),
+            )
+            if n_points == 0:
+                continue
+
+            first_point = prediction.positions[0]
+            px0, py0, vx, vy = self._xy_velocity_to_map(
+                float(first_point.x), float(first_point.y),
+                float(prediction.velocity.x), float(prediction.velocity.y),
+                msg.header.frame_id, msg.header.stamp,
+            )
+            if px0 is None:
+                continue
+
+            t0 = max(0.0, float(prediction.time_from_now[0]))
+            self._paint_disc(px0 - vx * t0, py0 - vy * t0, current_radius)
+            heading = math.atan2(vy, vx) if math.hypot(vx, vy) > 1e-3 else 0.0
+
+            for index in range(n_points):
+                point = prediction.positions[index]
+                px, py, _, _ = self._xy_velocity_to_map(
+                    float(point.x), float(point.y), 0.0, 0.0,
+                    msg.header.frame_id, msg.header.stamp,
+                )
+                if px is None:
+                    continue
+                self._paint_prediction_ellipse(
+                    px, py, heading,
+                    max(0.0, float(prediction.sigma_major[index])),
+                    max(0.0, float(prediction.sigma_minor[index])),
+                )
+            rendered += 1
+
+        if rendered:
+            rospy.loginfo_throttle(
+                1.0,
+                "[fm2_costmap_node.py::cb_person_predictions] Elipses publicadas para %d tracks.",
+                rendered,
+            )
+        self.publish_costmap()
+
+    def _predictions_are_fresh(self):
+        if self.last_person_prediction_msg_time is None:
+            return False
+        if self.person_predictions_timeout <= 0.0:
+            return True
+        return (
+            rospy.Time.now() - self.last_person_prediction_msg_time
+        ).to_sec() <= self.person_predictions_timeout
 
     def _person_timeout_cb(self, _event):
         if self.static_grid is None or self.person_grid is None:
@@ -301,10 +402,12 @@ class FM2CostmapNode:
         return math.atan2(siny_cosp, cosy_cosp)
 
     def _track_to_map(self, track, source_frame, stamp):
-        px = float(track.position.x)
-        py = float(track.position.y)
-        vx = float(track.velocity.x)
-        vy = float(track.velocity.y)
+        return self._xy_velocity_to_map(
+            float(track.position.x), float(track.position.y),
+            float(track.velocity.x), float(track.velocity.y), source_frame, stamp,
+        )
+
+    def _xy_velocity_to_map(self, px, py, vx, vy, source_frame, stamp):
 
         if source_frame == self.frame_map:
             return px, py, vx, vy
@@ -337,6 +440,33 @@ class FM2CostmapNode:
                     continue
                 cx = ix + dx
                 cy = iy + dy
+                if 0 <= cx < self.map_w and 0 <= cy < self.map_h:
+                    self.person_grid[cy, cx] = 100
+
+    def _paint_prediction_ellipse(self, x, y, heading, sigma_major, sigma_minor):
+        """Elipse de ocupación, alargada solo en la dirección de marcha."""
+        base_radius = self.person_radius + max(self.person_inflate, 0) * self.map_res
+        semi_major = min(
+            self.prediction_max_longitudinal_radius,
+            max(base_radius, base_radius + self.prediction_sigma_multiplier * sigma_major),
+        )
+        semi_minor = min(
+            self.prediction_max_lateral_radius,
+            max(base_radius, base_radius + self.prediction_sigma_multiplier * sigma_minor),
+        )
+        max_cells = int(math.ceil(max(semi_major, semi_minor) / self.map_res))
+        ix, iy = self.world_to_grid(x, y)
+        cos_heading = math.cos(heading)
+        sin_heading = math.sin(heading)
+
+        for dy in range(-max_cells, max_cells + 1):
+            for dx in range(-max_cells, max_cells + 1):
+                dx_m, dy_m = dx * self.map_res, dy * self.map_res
+                along = cos_heading * dx_m + sin_heading * dy_m
+                lateral = -sin_heading * dx_m + cos_heading * dy_m
+                if (along / semi_major) ** 2 + (lateral / semi_minor) ** 2 > 1.0:
+                    continue
+                cx, cy = ix + dx, iy + dy
                 if 0 <= cx < self.map_w and 0 <= cy < self.map_h:
                     self.person_grid[cy, cx] = 100
 

@@ -381,7 +381,7 @@ rgbd_person_tracker_node.py ──/person_tracks──► fm2_costmap_node.py �
 
 - `fm2_costmap_node.py` pinta un disco de ocupación en la posición actual de cada track confirmado, más discos adicionales en las posiciones **predichas** a 0.5/1.0/1.5/2.0s (`person_prediction_horizons`) asumiendo velocidad constante.
 - Si no llega ningún mensaje nuevo en `/person_tracks` durante `person_tracks_timeout` (0.6s por defecto), la capa de personas se limpia automáticamente del costmap (evita obstáculos "fantasma").
-- `fm2_planner_node.py` replanifica cada `replan_period` (1s por defecto) o si el robot se desvía más de `replan_offpath` (0.6m) de la ruta vigente, lo que le permite reaccionar a personas en movimiento con esa latencia máxima.
+- `fm2_planner_node.py` replanifica cada `replan_period` (1 s como valor interno; 0,5 s en los launchers FM2 principales) o si el robot se desvía más de `replan_offpath` (0.6m) de la ruta vigente.
 
 ### Demo con persona en movimiento
 

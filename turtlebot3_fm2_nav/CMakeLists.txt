@@ -54,6 +54,8 @@ catkin_install_python(
     src/fm2_controller_node.py
     src/person_patrol_mover.py
     src/person_track_publisher.py
+    src/zed_body_tracking_sim_node.py
+    src/initial_pose_publisher.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

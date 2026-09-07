@@ -22,6 +22,8 @@ add_message_files(
   FILES
     PersonTrack.msg
     PersonTrackArray.msg
+    PersonPrediction.msg
+    PersonPredictionArray.msg
 )
 
 generate_messages(
@@ -45,6 +47,8 @@ catkin_package(
 
 catkin_install_python(PROGRAMS
   scripts/rgbd_person_tracker_node.py
+  scripts/trajectory_predictor_node.py
+  scripts/trajectory_prediction_visualizer.py
   scripts/generate_world.py
   scripts/generate_multi_person_world.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

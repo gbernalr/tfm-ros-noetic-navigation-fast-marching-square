@@ -10,6 +10,7 @@
   <arg name="x_pos" default="-2.0"/>
   <arg name="y_pos" default="-0.5"/>
   <arg name="z_pos" default="0.0"/>
+  <arg name="yaw" default="0.0"/>
 
   <!-- =========================
        GAZEBO + MUNDO
@@ -29,7 +30,7 @@
 
   <!-- Spawnear el modelo en la posición inicial indicada -->
   <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf"
-        args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -param robot_description" />
+        args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -Y $(arg yaw) -param robot_description" />
 
   <!-- =========================
        TURTLEBOT3 (BRINGUP)
@@ -47,18 +48,36 @@
        AMCL
        ========================= -->
   <include file="$(find turtlebot3_navigation)/launch/amcl.launch"/>
+  <node pkg="turtlebot3_fm2_nav" type="initial_pose_publisher.py"
+        name="initial_pose_publisher" output="screen">
+    <param name="x" value="$(arg x_pos)"/>
+    <param name="y" value="$(arg y_pos)"/>
+    <param name="yaw" value="$(arg yaw)"/>
+  </node>
 
   <!-- =========================
        FM2 NODES (COSTMAP + PLANNER + CONTROLLER)
        ========================= -->
      <node pkg="turtlebot3_fm2_nav" type="fm2_costmap_node.py"    name="fm2_costmap_node"    output="screen">
           <param name="person_tracks_topic" value="/person_tracks"/>
-          <param name="person_radius" value="0.35"/>
-          <param name="person_inflate" value="2"/>
+          <param name="person_radius" value="0.30"/>
+          <param name="person_inflate" value="1"/>
+          <param name="prediction_sigma_multiplier" value="1.0"/>
+          <param name="prediction_max_longitudinal_radius" value="0.90"/>
+          <param name="prediction_max_lateral_radius" value="0.55"/>
           <param name="person_prediction_enabled" value="true"/>
+          <param name="person_predictions_enabled" value="true"/>
+          <param name="person_predictions_topic" value="/person_predictions"/>
           <param name="person_tracks_timeout" value="0.6"/>
      </node>
-     <node pkg="turtlebot3_fm2_nav" type="fm2_planner_node.py"    name="fm2_planner_node"    output="screen"/>
+     <node pkg="rgbd_person_tracker" type="trajectory_predictor_node.py"
+           name="trajectory_predictor_node" output="screen">
+          <param name="person_tracks_topic" value="/person_tracks"/>
+          <param name="person_predictions_topic" value="/person_predictions"/>
+     </node>
+     <node pkg="turtlebot3_fm2_nav" type="fm2_planner_node.py"    name="fm2_planner_node"    output="screen">
+          <param name="replan_period" value="0.5"/>
+     </node>
      <node pkg="turtlebot3_fm2_nav" type="fm2_controller_node.py" name="fm2_controller_node" output="screen"/>
 
   <!-- =========================
