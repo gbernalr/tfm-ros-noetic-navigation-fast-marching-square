@@ -468,7 +468,10 @@ class FM2Planner:
             return
 
         with self._state_lock:
-            if self.goal_world != goal_world or self.grid_bin is not grid_bin:
+            # Costmaps update at scan frequency and can change while FM2 is
+            # solving. The next periodic cycle will re-evaluate the route, but
+            # a newly received goal must never publish a path for its predecessor.
+            if self.goal_world != goal_world:
                 rospy.loginfo("FM2 planner discarded an obsolete planning result")
                 return
             self.path_world = tuple(pts)
