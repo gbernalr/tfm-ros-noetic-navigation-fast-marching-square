@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
+"""Provide a compact FM2 planner-and-controller node for simple simulations.
+
+ROS parameters are documented in ``ROS_PARAMETERS.md``.
+"""
+
 import math
+from typing import List, Tuple
 
 import cv2
 import numpy as np
@@ -7,12 +13,15 @@ import rospy
 import tf2_ros
 from fm2 import FM2
 from fm2.entities import FM2Map
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Quaternion, Twist
 from nav_msgs.msg import OccupancyGrid, Path
 
 
 class FM2TestPlanner:
-    def __init__(self):
+    """Combined FM2 planning and path-tracking node used by the simple launch."""
+
+    def __init__(self) -> None:
+        """Initialize the ROS node, configuration, state, and interfaces."""
         rospy.init_node("fm2_test_planner")
 
         self.frame_map = rospy.get_param("~frame_map", "map")
@@ -31,7 +40,7 @@ class FM2TestPlanner:
         self.map_res = None
         self.map_ox = None
         self.map_oy = None
-        self.last_pose = None  # (x, y, yaw)
+        self.last_pose = None  # Latest (x, y, yaw) pose.
         self.goal_world = None
         self.path_world = None
         self.path_idx = 0
@@ -56,7 +65,8 @@ class FM2TestPlanner:
 
         self.last_replan_time = rospy.Time.now()
 
-    def cb_map(self, msg: OccupancyGrid):
+    def cb_map(self, msg: OccupancyGrid) -> None:
+        """Convert the latest occupancy grid into a binary FM2 map."""
         w = msg.info.width
         h = msg.info.height
         self.map_res = msg.info.resolution
@@ -69,7 +79,8 @@ class FM2TestPlanner:
         obs = np.logical_or(occ, unk).astype(np.uint8)
         self.map_bin = (1 - obs).astype(np.uint8)
 
-    def cb_goal(self, msg: PoseStamped):
+    def cb_goal(self, msg: PoseStamped) -> None:
+        """Transform, store, and immediately plan toward a new goal."""
         pose = msg
         if msg.header.frame_id != self.frame_map:
             try:
@@ -81,13 +92,16 @@ class FM2TestPlanner:
                 tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException,
             ) as e:
-                rospy.logwarn("No se pudo transformar goal: %s", e)
+                rospy.logwarn(
+                    "Simple FM2 navigator could not transform the goal: %s", e
+                )
                 return
         self.goal_world = (pose.pose.position.x, pose.pose.position.y)
-        rospy.loginfo("Nuevo goal recibido: %s", self.goal_world)
+        rospy.loginfo("Simple FM2 navigator received goal %s", self.goal_world)
         self._plan(trigger="goal")
 
-    def cb_amcl(self, msg: PoseWithCovarianceStamped):
+    def cb_amcl(self, msg: PoseWithCovarianceStamped) -> None:
+        """Update the current robot pose from AMCL."""
         if msg.header.frame_id != self.frame_map:
             try:
                 ps = PoseStamped()
@@ -104,7 +118,9 @@ class FM2TestPlanner:
                 tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException,
             ) as e:
-                rospy.logwarn("No se pudo transformar amcl_pose: %s", e)
+                rospy.logwarn(
+                    "Simple FM2 navigator could not transform the AMCL pose: %s", e
+                )
                 return
         else:
             x = msg.pose.pose.position.x
@@ -113,26 +129,31 @@ class FM2TestPlanner:
         self.last_pose = (x, y, yaw)
 
     @staticmethod
-    def _yaw_from_quat(q):
+    def _yaw_from_quat(q: Quaternion) -> float:
+        """Return the planar yaw represented by a quaternion-like object."""
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
     @staticmethod
-    def _wrap_to_pi(a):
-        return (a + math.pi) % (2 * math.pi) - math.pi
+    def _wrap_to_pi(angle: float) -> float:
+        """Normalize an angle to the half-open interval [-pi, pi)."""
+        return (angle + math.pi) % (2 * math.pi) - math.pi
 
-    def _world_to_grid(self, x, y):
+    def _world_to_grid(self, x: float, y: float) -> Tuple[int, int]:
+        """Convert map-frame coordinates into occupancy-grid indices."""
         ix = int((x - self.map_ox) / self.map_res)
         iy = int((y - self.map_oy) / self.map_res)
         return ix, iy
 
-    def _grid_to_world(self, ix, iy):
+    def _grid_to_world(self, ix: int, iy: int) -> Tuple[float, float]:
+        """Return the world coordinates of the center of a grid cell."""
         x = self.map_ox + (ix + 0.5) * self.map_res
         y = self.map_oy + (iy + 0.5) * self.map_res
         return x, y
 
-    def _publish_path(self, pts_world):
+    def _publish_path(self, pts_world: List[Tuple[float, float]]) -> None:
+        """Publish world-frame points as a ROS path."""
         path = Path()
         path.header.stamp = rospy.Time.now()
         path.header.frame_id = self.frame_map
@@ -145,12 +166,13 @@ class FM2TestPlanner:
             path.poses.append(ps)
         self.pub_path.publish(path)
 
-    def _plan(self, trigger="timer"):
+    def _plan(self, trigger: str = "timer") -> None:
+        """Plan and publish a path from the current robot pose to the goal."""
         if self.map_bin is None:
-            rospy.logwarn_throttle(5, "Falta MAPA (map_bin es None)")
+            rospy.logwarn_throttle(5, "Simple FM2 navigator is waiting for a map")
             return
         if self.last_pose is None:
-            rospy.logwarn_throttle(5, "Falta AMCL POSE")
+            rospy.logwarn_throttle(5, "Simple FM2 navigator is waiting for AMCL")
             return
         if self.goal_world is None:
             return
@@ -178,7 +200,7 @@ class FM2TestPlanner:
         )
 
         if info.path is None:
-            rospy.logwarn("FM2 no encontró ruta")
+            rospy.logwarn("Simple FM2 navigator could not find a path")
             self.path_world = None
             return
 
@@ -191,12 +213,16 @@ class FM2TestPlanner:
         self.path_world = pts
         self.path_idx = 0
         self._publish_path(pts)
-        rospy.loginfo("Path calculado por FM2 (trigger: %s).", trigger)
+        rospy.loginfo("Simple FM2 navigator planned a path; trigger=%s", trigger)
 
-    def _stop(self):
+    def _stop(self) -> None:
+        """Publish a zero-velocity command."""
         self.pub_cmd.publish(Twist())
 
-    def _track_target(self, x, y, yaw, target):
+    def _track_target(
+        self, x: float, y: float, yaw: float, target: Tuple[float, float]
+    ) -> None:
+        """Publish a velocity command toward a path target."""
         tx, ty = target
         dx = tx - x
         dy = ty - y
@@ -212,7 +238,8 @@ class FM2TestPlanner:
         twist.angular.z = w
         self.pub_cmd.publish(twist)
 
-    def _is_off_path(self, x, y):
+    def _is_off_path(self, x: float, y: float) -> bool:
+        """Return whether the robot has deviated from the active path."""
         window_end = min(self.path_idx + 30, len(self.path_world))
         window = self.path_world[self.path_idx : window_end]
         if not window:
@@ -220,7 +247,8 @@ class FM2TestPlanner:
         distance = min(np.hypot(px - x, py - y) for px, py in window)
         return distance > self.replan_offpath
 
-    def _control_step(self):
+    def _control_step(self) -> None:
+        """Execute one path-tracking iteration."""
         if self.path_world is None or self.last_pose is None or self.goal_world is None:
             return
 
@@ -255,7 +283,8 @@ class FM2TestPlanner:
 
         self._track_target(x, y, yaw, target)
 
-    def spin(self):
+    def spin(self) -> None:
+        """Run replanning and control until ROS shuts down."""
         rate = rospy.Rate(self.rate_hz)
         while not rospy.is_shutdown():
             now = rospy.Time.now()
@@ -271,5 +300,5 @@ class FM2TestPlanner:
 
 if __name__ == "__main__":
     node = FM2TestPlanner()
-    rospy.loginfo("FM2 Test Planner INICIADO. Esperando mapa...")
+    rospy.loginfo("Simple FM2 navigator started; waiting for map data")
     node.spin()

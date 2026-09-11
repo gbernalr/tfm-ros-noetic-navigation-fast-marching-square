@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Inicializa AMCL con la misma pose usada al spawnear el TurtleBot en Gazebo."""
+"""Initialize AMCL with the pose used to spawn the TurtleBot in Gazebo.
+
+ROS parameters are documented in ``ROS_PARAMETERS.md``.
+"""
 
 import math
 
@@ -7,7 +10,8 @@ import rospy
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
 
-def main():
+def main() -> None:
+    """Build and repeatedly publish the configured initial AMCL pose."""
     rospy.init_node("initial_pose_publisher")
     frame_id = rospy.get_param("~frame_id", "map")
     x = float(rospy.get_param("~x", 0.0))
@@ -29,8 +33,8 @@ def main():
     msg.pose.covariance[7] = std_xy**2
     msg.pose.covariance[35] = std_yaw**2
 
-    # El spawn de Gazebo, AMCL y sus suscriptores arrancan en paralelo. Repetir
-    # el mensaje evita perder la inicialización por una carrera de arranque.
+    # Gazebo, AMCL, and their subscribers start concurrently. Repeating this
+    # message avoids losing initialization because of a startup race.
     rate = rospy.Rate(rate_hz)
     for _ in range(repeats):
         if rospy.is_shutdown():
@@ -39,7 +43,13 @@ def main():
         pub.publish(msg)
         rate.sleep()
 
-    rospy.loginfo("AMCL inicializado en map: (%.2f, %.2f, yaw=%.2f rad)", x, y, yaw)
+    rospy.loginfo(
+        "AMCL initial pose published in %s: (%.2f, %.2f, yaw=%.2f rad)",
+        frame_id,
+        x,
+        y,
+        yaw,
+    )
 
 
 if __name__ == "__main__":

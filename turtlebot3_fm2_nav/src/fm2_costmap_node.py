@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
+"""Fuse static, laser, and person data into an FM2 occupancy grid.
+
+ROS parameters are documented in ``ROS_PARAMETERS.md``.
+"""
+
 import math
+from typing import Optional, Tuple
 
 import numpy as np
 import rospy
 import tf2_ros
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import Quaternion, TransformStamped
 from nav_msgs.msg import OccupancyGrid
+from rgbd_person_tracker.msg import PersonPredictionArray, PersonTrack, PersonTrackArray
 from sensor_msgs.msg import LaserScan
-
-from rgbd_person_tracker.msg import PersonPredictionArray, PersonTrackArray
 
 
 class FM2CostmapNode:
-    def __init__(self):
+    """ROS node that maintains and publishes the combined navigation costmap."""
+
+    def __init__(self) -> None:
+        """Read configuration and initialize costmap layers and ROS interfaces."""
         self.frame_map = rospy.get_param("~frame_map", "map")
         self.map_topic = rospy.get_param("~map_topic", "/map")
         self.scan_topic = rospy.get_param("~scan_topic", "/scan")
@@ -60,10 +68,10 @@ class FM2CostmapNode:
             rospy.get_param("~person_max_speed_warn", 1.5)
         )
 
-        # Memoria de obstáculos dinámicos (en número de scans)
+        # Dynamic-obstacle lifetime measured in processed scans.
         self.dynamic_memory = int(rospy.get_param("~dynamic_memory", 15))
 
-        # Grid estático y dinámico
+        # Static and dynamic grid state.
         self.static_grid = None  # np.array int8 (-1,0,100)
         self.map_res = None
         self.map_w = None
@@ -71,10 +79,10 @@ class FM2CostmapNode:
         self.map_ox = None
         self.map_oy = None
 
-        # dynamic_grid ahora es un "contador" de memoria (uint8)
-        # >0 => hay obstáculo dinámico reciente
-        self.dynamic_grid = None  # np.array uint8 (0 libre, >0 obstáculo reciente)
-        self.person_grid = None  # np.array uint8 (0 libre, 100 persona)
+        # dynamic_grid stores uint8 lifetime counters; values above zero denote
+        # recently observed obstacles.
+        self.dynamic_grid = None
+        self.person_grid = None  # uint8 grid: 0 free, 100 occupied by a person.
         self.last_person_msg_time = None
         self.last_person_prediction_msg_time = None
 
@@ -104,14 +112,12 @@ class FM2CostmapNode:
             rospy.Duration(0.1), self._person_timeout_cb
         )
 
-        rospy.loginfo(
-            "[fm2_costmap_node.py::__init__] listo. "
-            "Esperando /map, /scan y /fm2_path..."
-        )
+        rospy.loginfo("FM2 costmap initialized; waiting for map, scan, and person data")
 
-    # ---------- Callbacks ----------
-    def cb_map(self, msg: OccupancyGrid):
-        # Guardamos el mapa estático como grid de int8
+    # ---------------------------- ROS callbacks ----------------------------
+    def cb_map(self, msg: OccupancyGrid) -> None:
+        """Initialize the static layer from an occupancy-grid message."""
+        # Store the static map as an int8 grid.
         self.map_res = msg.info.resolution
         self.map_w = msg.info.width
         self.map_h = msg.info.height
@@ -122,13 +128,13 @@ class FM2CostmapNode:
 
         static_grid = np.full((self.map_h, self.map_w), -1, dtype=np.int8)
 
-        # Consideramos ocupado >= 50, libre == 0, resto desconocido
+        # Values >= 50 are occupied, zero is free, and all others are unknown.
         static_grid[data >= 50] = 100
         static_grid[data == 0] = 0
 
         self.static_grid = static_grid
 
-        # Inicializamos la parte dinámica como contador de memoria
+        # Initialize the dynamic lifetime counters and the person layer.
         self.dynamic_grid = np.zeros_like(static_grid, dtype=np.uint8)
         self.person_grid = np.zeros_like(static_grid, dtype=np.uint8)
 
@@ -136,22 +142,22 @@ class FM2CostmapNode:
         occ_ratio = float((self.static_grid == 100).sum()) / (self.map_w * self.map_h)
 
         rospy.loginfo(
-            "[fm2_costmap_node.py::cb_map] Mapa estático cargado: "
-            "%.1f%% libre, %.1f%% obstáculo.",
+            "FM2 costmap loaded the static map: %.1f%% free, %.1f%% occupied",
             100.0 * free_ratio,
             100.0 * occ_ratio,
         )
 
         self.publish_costmap()
 
-    def cb_persons(self, msg: PersonTrackArray):
+    def cb_persons(self, msg: PersonTrackArray) -> None:
+        """Render tracks when no fresh external prediction is available."""
         if self.static_grid is None:
             return
 
         self.last_person_msg_time = rospy.Time.now()
 
-        # Cuando hay predicciones recientes, estas ya contienen el disco de
-        # posición actual y la ocupación futura. No se superpone el fallback.
+        # Fresh predictions already contain current and future occupancy, so do
+        # not overlay the constant-velocity fallback.
         if self.person_predictions_enabled and self._predictions_are_fresh():
             return
 
@@ -168,7 +174,10 @@ class FM2CostmapNode:
 
         self.publish_costmap()
 
-    def _render_person_track(self, track, msg, radius):
+    def _render_person_track(
+        self, track: PersonTrack, msg: PersonTrackArray, radius: int
+    ) -> None:
+        """Render one track and its optional constant-velocity projection."""
         if self.person_use_confirmed_only and not track.confirmed:
             return
 
@@ -197,8 +206,8 @@ class FM2CostmapNode:
 
         rospy.loginfo_throttle(
             1.0,
-            "[fm2_costmap_node.py::cb_persons] track_id=%d "
-            "pos=(%.2f,%.2f) vel=(%.2f,%.2f)|%.2fm/s predicciones=%s",
+            "Person track %d: position=(%.2f, %.2f), velocity="
+            "(%.2f, %.2f), speed=%.2f m/s, predictions=%s",
             track.track_id,
             px,
             py,
@@ -210,9 +219,9 @@ class FM2CostmapNode:
 
         if speed > self.person_max_speed_warn:
             rospy.logwarn(
-                "[fm2_costmap_node.py::cb_persons] PROYECCION DISPARADA "
-                "para track_id=%d: vel=%.2fm/s (umbral=%.2f) "
-                "pos=(%.2f,%.2f) -> punto predicho mas lejano=%s",
+                "Person track %d exceeds the configured speed threshold: "
+                "speed=%.2f m/s, threshold=%.2f m/s, position=(%.2f, %.2f), "
+                "farthest prediction=%s",
                 track.track_id,
                 speed,
                 self.person_max_speed_warn,
@@ -221,12 +230,12 @@ class FM2CostmapNode:
                 predicted_points[-1] if predicted_points else None,
             )
 
-    def cb_person_predictions(self, msg: PersonPredictionArray):
-        """Pinta posición actual y elipses futuras del predictor externo."""
+    def cb_person_predictions(self, msg: PersonPredictionArray) -> None:
+        """Render current positions and uncertainty ellipses from predictions."""
         if self.static_grid is None or not self.person_predictions_enabled:
             return
-        # Antes de acumular historial el predictor publica un array vacío:
-        # conservamos el fallback de /person_tracks en ese caso.
+        # The predictor emits an empty array before enough history is available;
+        # retain the track-based fallback in that case.
         if not msg.predictions:
             return
 
@@ -286,13 +295,13 @@ class FM2CostmapNode:
         if rendered:
             rospy.loginfo_throttle(
                 1.0,
-                "[fm2_costmap_node.py::cb_person_predictions] "
-                "Elipses publicadas para %d tracks.",
+                "FM2 costmap rendered prediction ellipses for %d tracks",
                 rendered,
             )
         self.publish_costmap()
 
-    def _predictions_are_fresh(self):
+    def _predictions_are_fresh(self) -> bool:
+        """Return whether the latest external prediction is still valid."""
         if self.last_person_prediction_msg_time is None:
             return False
         if self.person_predictions_timeout <= 0.0:
@@ -301,7 +310,8 @@ class FM2CostmapNode:
             rospy.Time.now() - self.last_person_prediction_msg_time
         ).to_sec() <= self.person_predictions_timeout
 
-    def _person_timeout_cb(self, _event):
+    def _person_timeout_cb(self, _event: object) -> None:
+        """Clear stale person occupancy after the configured track timeout."""
         if self.static_grid is None or self.person_grid is None:
             return
         if self.last_person_msg_time is None:
@@ -318,21 +328,22 @@ class FM2CostmapNode:
             self.publish_costmap()
             rospy.loginfo_throttle(
                 2.0,
-                "[fm2_costmap_node.py::_person_timeout_cb] Limpiando capa "
-                "de personas por timeout (%.2fs sin /person_tracks)",
+                "FM2 costmap cleared stale person occupancy after %.2f s "
+                "without person tracks",
                 age,
             )
 
-    def cb_scan(self, scan: LaserScan):
+    def cb_scan(self, scan: LaserScan) -> None:
+        """Update dynamic obstacle memory from a laser scan."""
         if self.static_grid is None:
             return
 
-        # TF: map -> frame del láser
+        # Transform laser-frame points into the map frame.
         try:
             tf: TransformStamped = self.tf_buffer.lookup_transform(
                 self.frame_map,
                 scan.header.frame_id,
-                rospy.Time(0),  # usar la última TF disponible
+                rospy.Time(0),  # Use the latest available transform.
                 rospy.Duration(0.1),
             )
         except (
@@ -342,14 +353,14 @@ class FM2CostmapNode:
         ) as e:
             rospy.logwarn_throttle(
                 2.0,
-                "[fm2_costmap_node.py::cb_scan] TF %s -> %s no disponible: %s",
+                "FM2 costmap could not transform %s <- %s: %s",
                 self.frame_map,
                 scan.header.frame_id,
                 e,
             )
             return
 
-        # Extraer yaw del TF
+        # Extract planar yaw from the transform.
         q = tf.transform.rotation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
@@ -402,20 +413,22 @@ class FM2CostmapNode:
             except ImportError:
                 rospy.logwarn_throttle(
                     10.0,
-                    "[fm2_costmap_node.py::cb_scan] OpenCV no disponible, "
-                    "dynamic_inflate ignorado.",
+                    "OpenCV is unavailable; dynamic obstacle inflation is disabled",
                 )
 
         dyn_count = int((self.dynamic_grid > 0).sum())
         rospy.loginfo_throttle(
             1.0,
-            "[fm2_costmap_node.py::cb_scan] Celdas dinámicas ocupadas (memoria >0): %d",
+            "FM2 costmap contains %d dynamic occupied cells",
             dyn_count,
         )
 
         self.publish_costmap()
 
-    def _lookup_transform(self, source_frame, stamp):
+    def _lookup_transform(
+        self, source_frame: str, stamp: rospy.Time
+    ) -> TransformStamped:
+        """Look up a transform from a source frame into the map frame."""
         lookup_stamp = stamp if stamp != rospy.Time() else rospy.Time(0)
         return self.tf_buffer.lookup_transform(
             self.frame_map,
@@ -425,12 +438,16 @@ class FM2CostmapNode:
         )
 
     @staticmethod
-    def _yaw_from_quat(q):
+    def _yaw_from_quat(q: Quaternion) -> float:
+        """Return the planar yaw represented by a quaternion-like object."""
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
-    def _track_to_map(self, track, source_frame, stamp):
+    def _track_to_map(
+        self, track: PersonTrack, source_frame: str, stamp: rospy.Time
+    ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+        """Transform a person's position and velocity into the map frame."""
         return self._xy_velocity_to_map(
             (float(track.position.x), float(track.position.y)),
             (float(track.velocity.x), float(track.velocity.y)),
@@ -438,7 +455,14 @@ class FM2CostmapNode:
             stamp,
         )
 
-    def _xy_velocity_to_map(self, position, velocity, source_frame, stamp):
+    def _xy_velocity_to_map(
+        self,
+        position: Tuple[float, float],
+        velocity: Tuple[float, float],
+        source_frame: str,
+        stamp: rospy.Time,
+    ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+        """Transform planar position and velocity vectors into the map frame."""
         px, py = position
         vx, vy = velocity
         if source_frame == self.frame_map:
@@ -453,8 +477,7 @@ class FM2CostmapNode:
         ) as exc:
             rospy.logwarn_throttle(
                 2.0,
-                "[fm2_costmap_node.py::_track_to_map] TF %s -> %s "
-                "no disponible para tracks: %s",
+                "FM2 costmap could not transform person data from %s to %s: %s",
                 self.frame_map,
                 source_frame,
                 exc,
@@ -471,7 +494,8 @@ class FM2CostmapNode:
         mvy = sin_yaw * vx + cos_yaw * vy
         return mx, my, mvx, mvy
 
-    def _paint_disc(self, x, y, radius_cells):
+    def _paint_disc(self, x: float, y: float, radius_cells: int) -> None:
+        """Mark a circular footprint in the person layer."""
         ix, iy = self.world_to_grid(x, y)
         if radius_cells <= 0:
             radius_cells = 1
@@ -485,8 +509,15 @@ class FM2CostmapNode:
                 if 0 <= cx < self.map_w and 0 <= cy < self.map_h:
                     self.person_grid[cy, cx] = 100
 
-    def _paint_prediction_ellipse(self, x, y, heading, sigma_major, sigma_minor):
-        """Elipse de ocupación, alargada solo en la dirección de marcha."""
+    def _paint_prediction_ellipse(
+        self,
+        x: float,
+        y: float,
+        heading: float,
+        sigma_major: float,
+        sigma_minor: float,
+    ) -> None:
+        """Mark an uncertainty ellipse aligned with predicted motion."""
         base_radius = self.person_radius + max(self.person_inflate, 0) * self.map_res
         semi_major = min(
             self.prediction_max_longitudinal_radius,
@@ -518,13 +549,15 @@ class FM2CostmapNode:
                 if 0 <= cx < self.map_w and 0 <= cy < self.map_h:
                     self.person_grid[cy, cx] = 100
 
-    # ---------- Helpers ----------
-    def world_to_grid(self, x, y):
+    # ------------------------------- Helpers -------------------------------
+    def world_to_grid(self, x: float, y: float) -> Tuple[int, int]:
+        """Convert map-frame coordinates into occupancy-grid indices."""
         ix = int((x - self.map_ox) / self.map_res)
         iy = int((y - self.map_oy) / self.map_res)
         return ix, iy
 
-    def publish_costmap(self):
+    def publish_costmap(self) -> None:
+        """Merge all layers and publish the resulting occupancy grid."""
         if self.static_grid is None:
             return
 

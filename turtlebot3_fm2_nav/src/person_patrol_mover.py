@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""
-person_patrol_mover.py — Mueve un modelo de Gazebo (persona) en bucle por una
-lista de waypoints, para simular una persona caminando por el escenario de
-turtlebot3_fm2_nav.
+"""Move a Gazebo person model repeatedly through a configured waypoint list.
+
+ROS parameters are documented in ``ROS_PARAMETERS.md``.
 """
 
 import math
@@ -13,7 +12,8 @@ from geometry_msgs.msg import Pose, Twist
 from tf.transformations import quaternion_from_euler
 
 
-def make_state(name, x, y, z, yaw):
+def make_state(name: str, x: float, y: float, z: float, yaw: float) -> ModelState:
+    """Create a Gazebo model-state message at the requested planar pose."""
     msg = ModelState()
     msg.model_name = name
     msg.reference_frame = "world"
@@ -33,7 +33,10 @@ def make_state(name, x, y, z, yaw):
 
 
 class PersonPatrolMover:
-    def __init__(self):
+    """ROS node that moves a Gazebo model along a closed patrol route."""
+
+    def __init__(self) -> None:
+        """Read patrol configuration and initialize the Gazebo publisher."""
         self.model_name = rospy.get_param("~model_name", "person_target")
         self.speed = float(rospy.get_param("~speed", 0.3))
         self.z_fixed = float(rospy.get_param("~z_fixed", 0.0))
@@ -47,8 +50,8 @@ class PersonPatrolMover:
         self.waypoints = [(float(p[0]), float(p[1])) for p in raw_wps]
         if len(self.waypoints) < 2:
             rospy.logwarn(
-                "[person_patrol_mover.py::__init__] se necesitan >= 2 "
-                "waypoints, usando cuadrado por defecto"
+                "Person patrol requires at least two waypoints; "
+                "using the default square route"
             )
             self.waypoints = [(1.0, 1.0), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)]
 
@@ -57,14 +60,14 @@ class PersonPatrolMover:
         self._x, self._y = self.waypoints[0]
 
         rospy.loginfo(
-            "[person_patrol_mover.py::__init__] modelo=%s "
-            "velocidad=%.2fm/s waypoints=%d",
+            "Person patrol initialized: model=%s, speed=%.2f m/s, waypoints=%d",
             self.model_name,
             self.speed,
             len(self.waypoints),
         )
 
-    def spin(self):
+    def spin(self) -> None:
+        """Move the model through its waypoint loop until ROS shuts down."""
         rate = rospy.Rate(self.rate_hz)
         dt = 1.0 / self.rate_hz
         rospy.sleep(1.0)
