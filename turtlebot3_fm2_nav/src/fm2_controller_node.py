@@ -49,7 +49,18 @@ class FM2Controller:
         )
         self.align_v_ang_max = float(rospy.get_param("~align_v_ang_max", 0.8))
         self.goal_tolerance = float(rospy.get_param("~goal_tolerance", 0.08))
+        self.path_point_tolerance = float(
+            rospy.get_param("~path_point_tolerance", 0.25)
+        )
+        self.turn_slowdown_angle = float(rospy.get_param("~turn_slowdown_angle", 1.2))
+        self.max_turn_speed_reduction = float(
+            rospy.get_param("~max_turn_speed_reduction", 0.8)
+        )
+        self.min_linear_speed_factor = float(
+            rospy.get_param("~min_linear_speed_factor", 0.2)
+        )
         self.rate_hz = int(rospy.get_param("~rate", 20))
+        self.tf_timeout = rospy.Duration(float(rospy.get_param("~tf_timeout", 0.5)))
 
         # Final orientation
         self.k_theta = float(rospy.get_param("~k_theta", 2.0))
@@ -103,7 +114,7 @@ class FM2Controller:
                 to_frame,
                 pose_stamped.header.frame_id,
                 rospy.Time(0),
-                rospy.Duration(0.5),
+                self.tf_timeout,
             ),
         )
 
@@ -213,7 +224,14 @@ class FM2Controller:
         else:
             # Once aligned, reduce speed progressively through turns without
             # turning every tight curve into an in-place rotation.
-            fact = max(0.2, 1.0 - min(abs(e_yaw) / 1.2, 0.8))
+            fact = max(
+                self.min_linear_speed_factor,
+                1.0
+                - min(
+                    abs(e_yaw) / self.turn_slowdown_angle,
+                    self.max_turn_speed_reduction,
+                ),
+            )
             v = self.v_lin * fact
             w = float(
                 np.clip(
@@ -271,7 +289,7 @@ class FM2Controller:
 
         if 0 <= self.path_idx < n_pts:
             px, py = self.path_world[self.path_idx]
-            if np.hypot(px - x, py - y) < 0.25:
+            if np.hypot(px - x, py - y) < self.path_point_tolerance:
                 self.path_idx = min(self.path_idx + 1, n_pts - 1)
 
         for i in range(self.path_idx, n_pts):

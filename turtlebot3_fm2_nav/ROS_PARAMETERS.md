@@ -15,7 +15,12 @@ operating domain; runtime validation will be added separately.
 | `~heading_align_threshold` | rad, [0, pi] | `0.35` | Heading error above which translation stops. |
 | `~align_v_ang_max` | rad/s, > 0 | `0.8` | Maximum angular velocity during heading alignment. |
 | `~goal_tolerance` | m, >= 0 | `0.08` | Position tolerance at the goal. |
+| `~path_point_tolerance` | m, >= 0 | `0.25` | Distance for advancing to the next path point. |
+| `~turn_slowdown_angle` | rad, > 0 | `1.2` | Heading error that reaches the configured turn-speed reduction. |
+| `~max_turn_speed_reduction` | dimensionless, [0, 1] | `0.8` | Maximum linear-speed reduction applied while turning. |
+| `~min_linear_speed_factor` | dimensionless, [0, 1] | `0.2` | Lower bound for linear speed while tracking a turn. |
 | `~rate` | Hz, > 0 | `20` | Control-loop frequency. |
+| `~tf_timeout` | s, > 0 | `0.5` | Maximum wait for a required TF transformation. |
 | `~k_theta` | 1/s, >= 0 | `2.0` | Proportional heading gain. |
 | `~goal_yaw_tolerance` | rad, >= 0 | `0.10` | Final orientation tolerance. |
 | `~use_goal_yaw` | boolean | `true` | Enable final goal-orientation alignment. |
@@ -30,6 +35,8 @@ operating domain; runtime validation will be added separately.
 | `~person_tracks_topic` | valid ROS topic name | `/person_tracks` | Tracked-person input. |
 | `~obstacle_range` | m, > 0 | `2.5` | Maximum laser obstacle range. |
 | `~min_range` | m, >= 0 | `0.05` | Minimum accepted laser range. |
+| `~occupancy_threshold` | occupancy value, integer [0, 100] | `50` | Input occupancy value treated as occupied. |
+| `~tf_timeout` | s, > 0 | `0.1` | Maximum wait for laser and person-data TF transformations. |
 | `~dynamic_inflate` | cells, integer >= 0 | `0` | Dynamic-obstacle inflation radius. |
 | `~person_radius` | m, >= 0 | `0.35` | Physical safety radius around a person. |
 | `~person_inflate` | cells, integer >= 0 | `2` | Additional person-layer inflation. |
@@ -43,6 +50,7 @@ operating domain; runtime validation will be added separately.
 | `~person_use_confirmed_only` | boolean | `true` | Ignore unconfirmed person tracks. |
 | `~person_prediction_horizons` | list of s, each > 0 | `[0.5, 1.0, 1.5, 2.0]` | Local projection horizons. |
 | `~person_tracks_timeout` | s, >= 0 | `0.6` | Track-layer freshness timeout. |
+| `~person_timeout_check_period` | s, > 0 | `0.1` | Frequency used to check for stale person occupancy. |
 | `~person_max_speed_warn` | m/s, > 0 | `1.5` | Speed threshold for warning logs. |
 | `~dynamic_memory` | scans, integer [0, 255] | `15` | Lifetime counter for laser obstacles. |
 
@@ -53,6 +61,8 @@ operating domain; runtime validation will be added separately.
 | `~frame_map` | non-empty ROS frame ID | `map` | Global planning frame. |
 | `~frame_base` | non-empty ROS frame ID | `base_link` | Robot base frame used as a pose fallback. |
 | `~inflate` | cells, integer >= 0 | `0` | Planning-map inflation radius. |
+| `~occupancy_threshold` | occupancy value, integer [0, 100] | `50` | Costmap value treated as occupied for planning. |
+| `~tf_timeout` | s, > 0 | `0.5` | Maximum wait for pose and goal TF transformations. |
 | `~replan_offpath` | m, >= 0 | `0.6` | Distance that triggers off-path replanning. |
 | `~replan_period` | s, >= 0 | `1.0` | Periodic replanning interval; zero disables it. |
 | `~rate` | Hz, > 0 | `20` | Planner-loop frequency. |
@@ -70,7 +80,13 @@ operating domain; runtime validation will be added separately.
 | `~goal_tolerance` | m, >= 0 | `0.08` | Position tolerance at the goal. |
 | `~k_theta` | 1/s, >= 0 | `2.0` | Proportional heading gain. |
 | `~replan_offpath` | m, >= 0 | `1.0` | Distance that triggers off-path replanning. |
+| `~offpath_window_points` | points, integer > 0 | `30` | Number of upcoming path points considered for off-path detection. |
+| `~path_point_tolerance` | m, >= 0 | `0.25` | Distance for advancing to the next path point. |
+| `~turn_slowdown_angle` | rad, > 0 | `1.2` | Heading error that reaches the configured turn-speed reduction. |
+| `~max_turn_speed_reduction` | dimensionless, [0, 1] | `0.8` | Maximum linear-speed reduction applied while turning. |
+| `~min_linear_speed_factor` | dimensionless, [0, 1] | `0.2` | Lower bound for linear speed while tracking a turn. |
 | `~rate` | Hz, > 0 | `20` | Control-loop frequency. |
+| `~tf_timeout` | s, > 0 | `0.5` | Maximum wait for required TF transformations. |
 
 ## `initial_pose_publisher.py`
 

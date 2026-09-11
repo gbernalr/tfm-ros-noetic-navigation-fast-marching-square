@@ -45,6 +45,8 @@ class FM2CostmapNode:
 
         self.obstacle_range = float(rospy.get_param("~obstacle_range", 2.5))
         self.min_range = float(rospy.get_param("~min_range", 0.05))
+        self.occupancy_threshold = int(rospy.get_param("~occupancy_threshold", 50))
+        self.tf_timeout = rospy.Duration(float(rospy.get_param("~tf_timeout", 0.1)))
 
         self.dynamic_inflate = int(rospy.get_param("~dynamic_inflate", 0))
         self.person_radius = float(rospy.get_param("~person_radius", 0.35))
@@ -78,6 +80,9 @@ class FM2CostmapNode:
         )
         self.person_tracks_timeout = float(
             rospy.get_param("~person_tracks_timeout", 0.6)
+        )
+        self.person_timeout_check_period = float(
+            rospy.get_param("~person_timeout_check_period", 0.1)
         )
         self.person_max_speed_warn = float(
             rospy.get_param("~person_max_speed_warn", 1.5)
@@ -124,7 +129,7 @@ class FM2CostmapNode:
             "fm2_costmap/costmap", OccupancyGrid, queue_size=1, latch=True
         )
         self.person_timeout_timer = rospy.Timer(
-            rospy.Duration(0.1), self._person_timeout_cb
+            rospy.Duration(self.person_timeout_check_period), self._person_timeout_cb
         )
 
         rospy.loginfo("FM2 costmap initialized; waiting for map, scan, and person data")
@@ -144,8 +149,9 @@ class FM2CostmapNode:
 
         static_grid = np.full((self.map_h, self.map_w), -1, dtype=np.int8)
 
-        # Values >= 50 are occupied, zero is free, and all others are unknown.
-        static_grid[data >= 50] = 100
+        # Values at or above the configured threshold are occupied, zero is
+        # free, and all others are unknown.
+        static_grid[data >= self.occupancy_threshold] = 100
         static_grid[data == 0] = 0
 
         self.static_grid = static_grid
@@ -364,7 +370,7 @@ class FM2CostmapNode:
                 self.frame_map,
                 scan.header.frame_id,
                 rospy.Time(0),  # Use the latest available transform.
-                rospy.Duration(0.1),
+                self.tf_timeout,
             )
         except (
             tf2_ros.LookupException,
@@ -454,7 +460,7 @@ class FM2CostmapNode:
             self.frame_map,
             source_frame,
             lookup_stamp,
-            rospy.Duration(0.1),
+            self.tf_timeout,
         )
 
     @staticmethod

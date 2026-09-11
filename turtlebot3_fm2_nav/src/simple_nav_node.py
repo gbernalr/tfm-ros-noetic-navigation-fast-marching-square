@@ -42,6 +42,8 @@ class FM2TestPlanner:
         self.frame_map = rospy.get_param("~frame_map", "map")
         self.replan_period = float(rospy.get_param("~replan_period", 0.2))
         self.inflation = int(rospy.get_param("~inflate", 2.0))
+        self.occupancy_threshold = int(rospy.get_param("~occupancy_threshold", 50))
+        self.tf_timeout = rospy.Duration(float(rospy.get_param("~tf_timeout", 0.5)))
 
         self.lookahead_dist = float(rospy.get_param("~lookahead", 0.35))
         self.v_lin = float(rospy.get_param("~v_lin", 0.22))
@@ -49,6 +51,17 @@ class FM2TestPlanner:
         self.goal_tolerance = float(rospy.get_param("~goal_tolerance", 0.08))
         self.k_theta = float(rospy.get_param("~k_theta", 2.0))
         self.replan_offpath = float(rospy.get_param("~replan_offpath", 1.0))
+        self.offpath_window_points = int(rospy.get_param("~offpath_window_points", 30))
+        self.path_point_tolerance = float(
+            rospy.get_param("~path_point_tolerance", 0.25)
+        )
+        self.turn_slowdown_angle = float(rospy.get_param("~turn_slowdown_angle", 1.2))
+        self.max_turn_speed_reduction = float(
+            rospy.get_param("~max_turn_speed_reduction", 0.8)
+        )
+        self.min_linear_speed_factor = float(
+            rospy.get_param("~min_linear_speed_factor", 0.2)
+        )
         self.rate_hz = int(rospy.get_param("~rate", 20))
 
         self.map_bin = None
@@ -90,7 +103,7 @@ class FM2TestPlanner:
         self.map_oy = msg.info.origin.position.y
         data = np.array(msg.data, dtype=np.int16).reshape(h, w)
 
-        occ = data >= 50
+        occ = data >= self.occupancy_threshold
         unk = data < 0
         obs = np.logical_or(occ, unk).astype(np.uint8)
         self.map_bin = (1 - obs).astype(np.uint8)
@@ -102,7 +115,7 @@ class FM2TestPlanner:
         if msg.header.frame_id != self.frame_map:
             try:
                 pose = self.tf_buffer.transform(
-                    msg, self.frame_map, timeout=rospy.Duration(0.5)
+                    msg, self.frame_map, timeout=self.tf_timeout
                 )
             except (
                 tf2_ros.LookupException,
@@ -126,7 +139,7 @@ class FM2TestPlanner:
                 ps.header = msg.header
                 ps.pose = msg.pose.pose
                 ps = self.tf_buffer.transform(
-                    ps, self.frame_map, timeout=rospy.Duration(0.5)
+                    ps, self.frame_map, timeout=self.tf_timeout
                 )
                 x = ps.pose.position.x
                 y = ps.pose.position.y
@@ -248,7 +261,14 @@ class FM2TestPlanner:
         ang_ref = math.atan2(dy, dx)
         e_yaw = self._wrap_to_pi(ang_ref - yaw)
 
-        fact = max(0.2, 1.0 - min(abs(e_yaw) / 1.2, 0.8))
+        fact = max(
+            self.min_linear_speed_factor,
+            1.0
+            - min(
+                abs(e_yaw) / self.turn_slowdown_angle,
+                self.max_turn_speed_reduction,
+            ),
+        )
         v = self.v_lin * fact
         w = float(np.clip(self.k_theta * e_yaw, -self.v_ang_max, self.v_ang_max))
 
@@ -259,7 +279,9 @@ class FM2TestPlanner:
 
     def _is_off_path(self, x: float, y: float) -> bool:
         """Return whether the robot has deviated from the active path."""
-        window_end = min(self.path_idx + 30, len(self.path_world))
+        window_end = min(
+            self.path_idx + self.offpath_window_points, len(self.path_world)
+        )
         window = self.path_world[self.path_idx : window_end]
         if not window:
             return False
@@ -288,7 +310,7 @@ class FM2TestPlanner:
 
         if self.path_idx < len(self.path_world):
             px, py = self.path_world[self.path_idx]
-            if np.hypot(px - x, py - y) < 0.25:
+            if np.hypot(px - x, py - y) < self.path_point_tolerance:
                 self.path_idx = min(self.path_idx + 1, len(self.path_world) - 1)
 
         if target is None:

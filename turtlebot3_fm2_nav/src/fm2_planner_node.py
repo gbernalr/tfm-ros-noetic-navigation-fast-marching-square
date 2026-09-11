@@ -57,6 +57,8 @@ class FM2Planner:
 
         # Planning map
         self.inflation = int(rospy.get_param("~inflate", 0))
+        self.occupancy_threshold = int(rospy.get_param("~occupancy_threshold", 50))
+        self.tf_timeout = rospy.Duration(float(rospy.get_param("~tf_timeout", 0.5)))
 
         # Replanning policy
         self.replan_offpath = float(rospy.get_param("~replan_offpath", 0.6))
@@ -257,7 +259,7 @@ class FM2Planner:
                 to_frame,
                 pose_stamped.header.frame_id,
                 rospy.Time(0),
-                rospy.Duration(0.5),
+                self.tf_timeout,
             ),
         )
 
@@ -288,7 +290,7 @@ class FM2Planner:
 
         data = np.array(msg.data, dtype=np.int16).reshape(h, w)
 
-        occ = data >= 50
+        occ = data >= self.occupancy_threshold
         unk = data < 0
         obs = np.logical_or(occ, unk).astype(np.uint8)
 
@@ -355,7 +357,7 @@ class FM2Planner:
                 self.frame_map,
                 self.frame_base,
                 rospy.Time(0),
-                rospy.Duration(0.5),
+                self.tf_timeout,
             )
         except (
             tf2_ros.LookupException,
