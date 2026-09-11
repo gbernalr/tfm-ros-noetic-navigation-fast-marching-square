@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-import rospy
-import numpy as np
-import tf2_ros
-import tf2_geometry_msgs
+import math
 
-from geometry_msgs.msg import PoseStamped, Twist, PoseWithCovarianceStamped
+import numpy as np
+import rospy
+import tf2_geometry_msgs
+import tf2_ros
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Path
 
 
@@ -12,7 +13,6 @@ class FM2Controller:
     def __init__(self):
         # Frames
         self.frame_map = rospy.get_param("~frame_map", "map")
-        self.frame_base = rospy.get_param("~frame_base", "base_link")
 
         # Parámetros de seguimiento
         self.lookahead_dist = float(rospy.get_param("~lookahead", 0.35))
@@ -24,37 +24,30 @@ class FM2Controller:
         self.heading_align_threshold = float(
             rospy.get_param("~heading_align_threshold", 0.35)
         )
-        self.align_v_ang_max = float(
-            rospy.get_param("~align_v_ang_max", 0.8)
-        )
+        self.align_v_ang_max = float(rospy.get_param("~align_v_ang_max", 0.8))
         self.goal_tolerance = float(rospy.get_param("~goal_tolerance", 0.08))
         self.rate_hz = int(rospy.get_param("~rate", 20))
 
         # Orientación final
         self.k_theta = float(rospy.get_param("~k_theta", 2.0))
-        self.goal_yaw_tolerance = float(
-            rospy.get_param("~goal_yaw_tolerance", 0.10)
-        )
+        self.goal_yaw_tolerance = float(rospy.get_param("~goal_yaw_tolerance", 0.10))
         self.use_goal_yaw = bool(rospy.get_param("~use_goal_yaw", True))
 
         # Estado
-        self.path_world = None      # lista de (x, y)
+        self.path_world = None  # lista de (x, y)
         self.path_idx = 0
         self.mode_align = False
 
-        self.goal_yaw = None        # yaw deseado en el goal
+        self.goal_yaw = None  # yaw deseado en el goal
 
-        self.last_pose = None       # (x, y, yaw)
-        self.have_amcl = False
+        self.last_pose = None  # (x, y, yaw)
 
         # TF (por si amcl_pose no está en frame_map)
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
         # ROS I/O
-        self.sub_path = rospy.Subscriber(
-            "fm2_path", Path, self.cb_path, queue_size=1
-        )
+        self.sub_path = rospy.Subscriber("fm2_path", Path, self.cb_path, queue_size=1)
         self.sub_goal = rospy.Subscriber(
             "move_base_simple/goal", PoseStamped, self.cb_goal, queue_size=1
         )
@@ -69,14 +62,12 @@ class FM2Controller:
 
     @staticmethod
     def _yaw_from_quat(q):
-        import math
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
     @staticmethod
     def _wrap_to_pi(a):
-        import math
         return (a + math.pi) % (2 * math.pi) - math.pi
 
     def _transform_pose(self, pose_stamped, to_frame):
@@ -109,15 +100,13 @@ class FM2Controller:
             # oscilación.
             if self.last_pose is not None:
                 x, y, _ = self.last_pose
-                self.path_idx = int(np.argmin([
-                    np.hypot(px - x, py - y) for px, py in pts
-                ]))
+                self.path_idx = int(
+                    np.argmin([np.hypot(px - x, py - y) for px, py in pts])
+                )
             else:
                 self.path_idx = 0
             self.mode_align = False
-            rospy.loginfo(
-                "FM2 Controller: nueva ruta recibida con %d puntos", len(pts)
-            )
+            rospy.loginfo("FM2 Controller: nueva ruta recibida con %d puntos", len(pts))
         else:
             rospy.logwarn("FM2 Controller: fm2_path vacío recibido")
             self.path_world = None
@@ -128,7 +117,11 @@ class FM2Controller:
         if msg.header.frame_id != self.frame_map:
             try:
                 msg = self._transform_pose(msg, self.frame_map)
-            except Exception as e:
+            except (
+                tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException,
+            ) as e:
                 rospy.logwarn(
                     "FM2 Controller cb_goal: No se pudo transformar goal: %s", e
                 )
@@ -151,7 +144,11 @@ class FM2Controller:
                 x = pose.pose.position.x
                 y = pose.pose.position.y
                 yaw = self._yaw_from_quat(pose.pose.orientation)
-            except Exception as e:
+            except (
+                tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException,
+            ) as e:
                 rospy.logwarn(
                     "FM2 Controller cb_amcl: No se pudo transformar pose: %s", e
                 )
@@ -162,12 +159,10 @@ class FM2Controller:
             yaw = self._yaw_from_quat(msg.pose.pose.orientation)
 
         self.last_pose = (x, y, yaw)
-        self.have_amcl = True
 
     # ------------------------ Control ------------------------
 
     def _track_target(self, x, y, yaw, target):
-        import math
         tx, ty = target
         dx = tx - x
         dy = ty - y
@@ -178,60 +173,62 @@ class FM2Controller:
             # El siguiente punto está demasiado lateral: primero orientar el
             # robot. El límite más bajo evita sobrepasar el rumbo por inercia.
             v = 0.0
-            w = float(np.clip(
-                self.k_theta * e_yaw,
-                -self.align_v_ang_max,
-                self.align_v_ang_max,
-            ))
+            w = float(
+                np.clip(
+                    self.k_theta * e_yaw,
+                    -self.align_v_ang_max,
+                    self.align_v_ang_max,
+                )
+            )
         else:
             # Ya orientado: se conserva la reducción progresiva al trazar
             # curvas, sin convertir una curva cerrada en un giro sobre sitio.
             fact = max(0.2, 1.0 - min(abs(e_yaw) / 1.2, 0.8))
             v = self.v_lin * fact
-            w = float(np.clip(
-                self.k_theta * e_yaw,
-                -self.v_ang_max,
-                self.v_ang_max,
-            ))
+            w = float(
+                np.clip(
+                    self.k_theta * e_yaw,
+                    -self.v_ang_max,
+                    self.v_ang_max,
+                )
+            )
 
         twist = Twist()
         twist.linear.x = v
         twist.angular.z = w
         self.pub_cmd.publish(twist)
 
-    def _control_step(self):
-        # Fase de alineación final con el yaw objetivo
-        if self.mode_align:
-            if self.last_pose is None:
-                return
-
-            x, y, yaw = self.last_pose 
-
-            if self.goal_yaw is None:
-                self._stop()
-                self.path_world = None
-                self.mode_align = False
-                return
-
-            e_yaw = self._wrap_to_pi(self.goal_yaw - yaw)
-            if abs(e_yaw) < self.goal_yaw_tolerance:
-                self._stop()
-                self.path_world = None
-                self.goal_yaw = None
-                self.mode_align = False
-                return
-
-            twist = Twist()
-            twist.linear.x = 0.0
-            twist.angular.z = float(
-                np.clip(self.k_theta * e_yaw, -self.v_ang_max, self.v_ang_max)
-            )
-            self.pub_cmd.publish(twist)
-            return
-
-        if self.path_world is None or not self.path_world:
-            return
+    def _align_to_goal(self):
         if self.last_pose is None:
+            return
+
+        _, _, yaw = self.last_pose
+        if self.goal_yaw is None:
+            self._stop()
+            self.path_world = None
+            self.mode_align = False
+            return
+
+        e_yaw = self._wrap_to_pi(self.goal_yaw - yaw)
+        if abs(e_yaw) < self.goal_yaw_tolerance:
+            self._stop()
+            self.path_world = None
+            self.goal_yaw = None
+            self.mode_align = False
+            return
+
+        twist = Twist()
+        twist.angular.z = float(
+            np.clip(self.k_theta * e_yaw, -self.v_ang_max, self.v_ang_max)
+        )
+        self.pub_cmd.publish(twist)
+
+    def _control_step(self):
+        if self.mode_align:
+            self._align_to_goal()
+            return
+
+        if not self.path_world or self.last_pose is None:
             return
 
         x, y, yaw = self.last_pose

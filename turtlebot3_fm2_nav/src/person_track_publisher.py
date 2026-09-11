@@ -11,8 +11,9 @@ razonablemente alineados en el origen (caso habitual con los mundos y mapas
 por defecto de turtlebot3). Si detectas offset visual en RViz, ajusta
 output_frame o añade una transformación estática world->map.
 """
-import rospy
+
 import numpy as np
+import rospy
 from gazebo_msgs.msg import ModelStates
 
 from rgbd_person_tracker.msg import PersonTrack, PersonTrackArray
@@ -41,7 +42,8 @@ class PersonTrackPublisher:
 
         rospy.loginfo(
             "[person_track_publisher.py::__init__] modelo=%s frame_salida=%s",
-            self.model_name, self.output_frame,
+            self.model_name,
+            self.output_frame,
         )
 
     def _cb(self, msg: ModelStates):
@@ -59,7 +61,8 @@ class PersonTrackPublisher:
             if dt < self.min_dt:
                 rospy.logwarn_throttle(
                     1.0,
-                    "[person_track_publisher.py::_cb] dt sospechosamente pequeño (%.4fs), "
+                    "[person_track_publisher.py::_cb] "
+                    "dt sospechosamente pequeño (%.4fs), "
                     "se omite esta muestra para no inflar la velocidad",
                     dt,
                 )
@@ -72,10 +75,18 @@ class PersonTrackPublisher:
 
                 rospy.loginfo_throttle(
                     1.0,
-                    "[person_track_publisher.py::_cb] pos=(%.2f,%.2f) dt=%.4f raw_vel=(%.2f,%.2f)|%.2fm/s "
+                    "[person_track_publisher.py::_cb] pos=(%.2f,%.2f) "
+                    "dt=%.4f raw_vel=(%.2f,%.2f)|%.2fm/s "
                     "vel_suavizada=(%.2f,%.2f)|%.2fm/s",
-                    pos[0], pos[1], dt, raw_vel[0], raw_vel[1], raw_speed,
-                    self._vel[0], self._vel[1], smoothed_speed,
+                    pos[0],
+                    pos[1],
+                    dt,
+                    raw_vel[0],
+                    raw_vel[1],
+                    raw_speed,
+                    self._vel[0],
+                    self._vel[1],
+                    smoothed_speed,
                 )
 
                 if raw_speed > self.max_speed_warn:
@@ -83,8 +94,13 @@ class PersonTrackPublisher:
                         "[person_track_publisher.py::_cb] PICO DE VELOCIDAD detectado: "
                         "raw_speed=%.2fm/s (umbral=%.2f) dt=%.4fs pos_prev=(%.2f,%.2f) "
                         "pos_actual=(%.2f,%.2f) -> vel_suavizada resultante=%.2fm/s",
-                        raw_speed, self.max_speed_warn, dt,
-                        self._last_pos[0], self._last_pos[1], pos[0], pos[1],
+                        raw_speed,
+                        self.max_speed_warn,
+                        dt,
+                        self._last_pos[0],
+                        self._last_pos[1],
+                        pos[0],
+                        pos[1],
                         smoothed_speed,
                     )
 

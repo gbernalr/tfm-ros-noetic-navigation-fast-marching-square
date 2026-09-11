@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-import rospy
-import numpy as np
-import os
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
-from nav_msgs.msg import OccupancyGrid, Path
-import tf2_ros
-import tf2_geometry_msgs
-import cv2
 import math
 
+import cv2
+import numpy as np
+import rospy
+import tf2_ros
 from fm2 import FM2
-from fm2.entities import FM2Map, FM2Info
+from fm2.entities import FM2Map
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from nav_msgs.msg import OccupancyGrid, Path
 
 
 class FM2TestPlanner:
@@ -18,7 +16,6 @@ class FM2TestPlanner:
         rospy.init_node("fm2_test_planner")
 
         self.frame_map = rospy.get_param("~frame_map", "map")
-        self.frame_base = rospy.get_param("~frame_base", "base_link")
         self.replan_period = float(rospy.get_param("~replan_period", 0.2))
         self.inflation = int(rospy.get_param("~inflate", 2.0))
 
@@ -44,9 +41,15 @@ class FM2TestPlanner:
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-        self.sub_map = rospy.Subscriber("fm2_costmap/costmap", OccupancyGrid, self.cb_map, queue_size=1)
-        self.sub_goal = rospy.Subscriber("move_base_simple/goal", PoseStamped, self.cb_goal, queue_size=1)
-        self.sub_amcl = rospy.Subscriber("amcl_pose", PoseWithCovarianceStamped, self.cb_amcl, queue_size=1)
+        self.sub_map = rospy.Subscriber(
+            "fm2_costmap/costmap", OccupancyGrid, self.cb_map, queue_size=1
+        )
+        self.sub_goal = rospy.Subscriber(
+            "move_base_simple/goal", PoseStamped, self.cb_goal, queue_size=1
+        )
+        self.sub_amcl = rospy.Subscriber(
+            "amcl_pose", PoseWithCovarianceStamped, self.cb_amcl, queue_size=1
+        )
 
         self.pub_path = rospy.Publisher("fm2_path", Path, queue_size=1, latch=True)
         self.pub_cmd = rospy.Publisher("cmd_vel", Twist, queue_size=1)
@@ -61,8 +64,8 @@ class FM2TestPlanner:
         self.map_oy = msg.info.origin.position.y
         data = np.array(msg.data, dtype=np.int16).reshape(h, w)
 
-        occ = (data >= 50)
-        unk = (data < 0)
+        occ = data >= 50
+        unk = data < 0
         obs = np.logical_or(occ, unk).astype(np.uint8)
         self.map_bin = (1 - obs).astype(np.uint8)
 
@@ -70,8 +73,14 @@ class FM2TestPlanner:
         pose = msg
         if msg.header.frame_id != self.frame_map:
             try:
-                pose = self.tf_buffer.transform(msg, self.frame_map, timeout=rospy.Duration(0.5))
-            except Exception as e:
+                pose = self.tf_buffer.transform(
+                    msg, self.frame_map, timeout=rospy.Duration(0.5)
+                )
+            except (
+                tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException,
+            ) as e:
                 rospy.logwarn("No se pudo transformar goal: %s", e)
                 return
         self.goal_world = (pose.pose.position.x, pose.pose.position.y)
@@ -79,17 +88,22 @@ class FM2TestPlanner:
         self._plan(trigger="goal")
 
     def cb_amcl(self, msg: PoseWithCovarianceStamped):
-        pose = msg
         if msg.header.frame_id != self.frame_map:
             try:
                 ps = PoseStamped()
                 ps.header = msg.header
                 ps.pose = msg.pose.pose
-                ps = self.tf_buffer.transform(ps, self.frame_map, timeout=rospy.Duration(0.5))
+                ps = self.tf_buffer.transform(
+                    ps, self.frame_map, timeout=rospy.Duration(0.5)
+                )
                 x = ps.pose.position.x
                 y = ps.pose.position.y
                 yaw = self._yaw_from_quat(ps.pose.orientation)
-            except Exception as e:
+            except (
+                tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException,
+            ) as e:
                 rospy.logwarn("No se pudo transformar amcl_pose: %s", e)
                 return
         else:
@@ -100,13 +114,13 @@ class FM2TestPlanner:
 
     @staticmethod
     def _yaw_from_quat(q):
-        siny_cosp = 2*(q.w*q.z + q.x*q.y)
-        cosy_cosp = 1 - 2*(q.y*q.y + q.z*q.z)
+        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
     @staticmethod
     def _wrap_to_pi(a):
-        return (a + math.pi) % (2*math.pi) - math.pi
+        return (a + math.pi) % (2 * math.pi) - math.pi
 
     def _world_to_grid(self, x, y):
         ix = int((x - self.map_ox) / self.map_res)
@@ -159,7 +173,9 @@ class FM2TestPlanner:
         self.fm2 = FM2(mode="cpu")
         fm2_map = FM2Map.from_binary_map(binary, create_border=True)
         self.fm2.set_map(fm2_map)
-        info = self.fm2.get_path((int(start_ix), int(start_iy)), (int(goal_ix), int(goal_iy)))
+        info = self.fm2.get_path(
+            (int(start_ix), int(start_iy)), (int(goal_ix), int(goal_iy))
+        )
 
         if info.path is None:
             rospy.logwarn("FM2 no encontró ruta")
@@ -167,7 +183,11 @@ class FM2TestPlanner:
             return
 
         xs, ys = info.path
-        pts = [self._grid_to_world(int(ix), int(iy)) for ix, iy in zip(xs, ys)]
+        # ROS Noetic uses Python 3.8, which does not support zip(strict=...).
+        pts = [
+            self._grid_to_world(int(ix), int(iy))
+            for ix, iy in zip(xs, ys)  # noqa: B905
+        ]
         self.path_world = pts
         self.path_idx = 0
         self._publish_path(pts)
@@ -192,19 +212,23 @@ class FM2TestPlanner:
         twist.angular.z = w
         self.pub_cmd.publish(twist)
 
+    def _is_off_path(self, x, y):
+        window_end = min(self.path_idx + 30, len(self.path_world))
+        window = self.path_world[self.path_idx : window_end]
+        if not window:
+            return False
+        distance = min(np.hypot(px - x, py - y) for px, py in window)
+        return distance > self.replan_offpath
+
     def _control_step(self):
         if self.path_world is None or self.last_pose is None or self.goal_world is None:
             return
 
         x, y, yaw = self.last_pose
 
-        if self.path_world:
-            window = self.path_world[self.path_idx: min(self.path_idx + 30, len(self.path_world))]
-            if window:
-                dmin = min(np.hypot(px - x, py - y) for (px, py) in window)
-                if dmin > self.replan_offpath:
-                    self._plan(trigger="offpath")
-                    return
+        if self._is_off_path(x, y):
+            self._plan(trigger="offpath")
+            return
 
         target = None
         for i in range(self.path_idx, len(self.path_world)):
@@ -235,10 +259,12 @@ class FM2TestPlanner:
         rate = rospy.Rate(self.rate_hz)
         while not rospy.is_shutdown():
             now = rospy.Time.now()
-            if self.goal_world is not None:
-                if (now - self.last_replan_time).to_sec() > self.replan_period:
-                    self.last_replan_time = now
-                    self._plan(trigger="timer")
+            if (
+                self.goal_world is not None
+                and (now - self.last_replan_time).to_sec() > self.replan_period
+            ):
+                self.last_replan_time = now
+                self._plan(trigger="timer")
             self._control_step()
             rate.sleep()
 

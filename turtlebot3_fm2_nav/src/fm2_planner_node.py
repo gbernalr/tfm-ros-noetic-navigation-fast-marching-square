@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-import rospy
-import numpy as np
-import tf2_ros
-import tf2_geometry_msgs
-import cv2
+import math
 
+import cv2
+import numpy as np
+import rospy
+import tf2_geometry_msgs
+import tf2_ros
+from fm2 import FM2
+from fm2.entities import FM2Map
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Path
-from fm2 import FM2
-from fm2.entities import FM2Map, FM2Info
 
 
 class FM2Planner:
@@ -26,7 +27,6 @@ class FM2Planner:
         self.rate_hz = int(rospy.get_param("~rate", 20))
 
         # Estado del mapa
-        self.map_msg = None
         self.grid_bin = None
         self.map_res = None
         self.map_ox = None
@@ -38,8 +38,7 @@ class FM2Planner:
         self.last_replan_time = rospy.Time.now()
 
         # Pose
-        self.last_pose = None   # (x, y, yaw)
-        self.have_amcl = False
+        self.last_pose = None  # (x, y, yaw)
 
         # TF
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
@@ -91,7 +90,7 @@ class FM2Planner:
                 x1 = min(w - 1, ix + radius_cells)
                 y0 = max(0, iy - radius_cells)
                 y1 = min(h - 1, iy + radius_cells)
-                if (binary[y0:y1+1, x0:x1+1] == 0).any():
+                if (binary[y0 : y1 + 1, x0 : x1 + 1] == 0).any():
                     hit = True
 
             if hit:
@@ -108,15 +107,9 @@ class FM2Planner:
 
     @staticmethod
     def _yaw_from_quat(q):
-        import math
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
-
-    @staticmethod
-    def _wrap_to_pi(a):
-        import math
-        return (a + math.pi) % (2 * math.pi) - math.pi
 
     def _world_to_grid(self, x, y):
         ix = int((x - self.map_ox) / self.map_res)
@@ -155,7 +148,6 @@ class FM2Planner:
     # ----------------------- Callbacks de ROS -----------------------
 
     def cb_map(self, msg):
-        self.map_msg = msg
         w = msg.info.width
         h = msg.info.height
         self.map_res = msg.info.resolution
@@ -164,8 +156,8 @@ class FM2Planner:
 
         data = np.array(msg.data, dtype=np.int16).reshape(h, w)
 
-        occ = (data >= 50)
-        unk = (data < 0)
+        occ = data >= 50
+        unk = data < 0
         obs = np.logical_or(occ, unk).astype(np.uint8)
 
         self.grid_bin = (1 - obs).astype(np.uint8)
@@ -174,7 +166,11 @@ class FM2Planner:
         if msg.header.frame_id != self.frame_map:
             try:
                 msg = self._transform_pose(msg, self.frame_map)
-            except Exception as e:
+            except (
+                tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException,
+            ) as e:
                 rospy.logwarn("FM2Planner cb_goal: No se pudo transformar goal: %s", e)
                 return
 
@@ -198,7 +194,11 @@ class FM2Planner:
                 x = pose.pose.position.x
                 y = pose.pose.position.y
                 yaw = self._yaw_from_quat(pose.pose.orientation)
-            except Exception as e:
+            except (
+                tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException,
+            ) as e:
                 rospy.logwarn("FM2Planner cb_amcl: No se pudo transformar pose: %s", e)
                 return
         else:
@@ -207,31 +207,38 @@ class FM2Planner:
             yaw = self._yaw_from_quat(msg.pose.pose.orientation)
 
         self.last_pose = (x, y, yaw)
-        self.have_amcl = True
 
     # ----------------------- Lógica de planificación -----------------------
+
+    def _update_pose_from_tf(self):
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.frame_map,
+                self.frame_base,
+                rospy.Time(0),
+                rospy.Duration(0.5),
+            )
+        except (
+            tf2_ros.LookupException,
+            tf2_ros.ConnectivityException,
+            tf2_ros.ExtrapolationException,
+        ) as error:
+            rospy.logwarn(
+                "FM2Planner: no se pudo obtener la pose mediante TF: %s", error
+            )
+            return False
+
+        position = transform.transform.translation
+        yaw = self._yaw_from_quat(transform.transform.rotation)
+        self.last_pose = (position.x, position.y, yaw)
+        return True
 
     def _plan_from_current_pose(self):
         if self.grid_bin is None or self.goal_world is None:
             return
 
-        if self.last_pose is None:
-            try:
-                tf = self.tf_buffer.lookup_transform(
-                    self.frame_map,
-                    self.frame_base,
-                    rospy.Time(0),
-                    rospy.Duration(0.5),
-                )
-                x = tf.transform.translation.x
-                y = tf.transform.translation.y
-                yaw = self._yaw_from_quat(tf.transform.rotation)
-                self.last_pose = (x, y, yaw)
-            except Exception as e:
-                rospy.logwarn(
-                    "FM2Planner _plan_from_current_pose: No se pudo obtener TF: %s", e
-                )
-                return
+        if self.last_pose is None and not self._update_pose_from_tf():
+            return
 
         sx, sy, _ = self.last_pose
         gx, gy = self.goal_world
@@ -243,7 +250,7 @@ class FM2Planner:
 
         if binary.size == 0:
             return
-        
+
         if self.inflation > 0:
             k = 2 * self.inflation + 1
             kernel = np.ones((k, k), np.uint8)
@@ -255,7 +262,7 @@ class FM2Planner:
             self.fm2 = FM2(mode="cpu")
             fm2_map = FM2Map.from_binary_map(binary, create_border=True)
             self.fm2.set_map(fm2_map)
-        except Exception as e:
+        except (TypeError, ValueError, RuntimeError) as e:
             rospy.logwarn("FM2Planner: Error en set_map: %s", e)
             self.path_world = None
             return
@@ -269,7 +276,7 @@ class FM2Planner:
             rospy.logwarn("FM2Planner: IndexError en get_path: %s", e)
             self.path_world = None
             return
-        except Exception as e:
+        except (TypeError, ValueError, RuntimeError) as e:
             rospy.logwarn("FM2Planner: Error en get_path: %s", e)
             self.path_world = None
             return
@@ -280,7 +287,11 @@ class FM2Planner:
             return
 
         rows, cols = info.path
-        pts = [self._grid_to_world(int(col), int(row)) for row, col in zip(rows, cols)]
+        # ROS Noetic uses Python 3.8, which does not support zip(strict=...).
+        pts = [
+            self._grid_to_world(int(col), int(row))
+            for row, col in zip(rows, cols)  # noqa: B905
+        ]
 
         # Comprobación de colisiones
         result = self.check_pts_collisions(pts, binary=binary, radius_cells=0)
@@ -306,15 +317,20 @@ class FM2Planner:
         if self.path_world is None:
             need_replan = True
 
-        if not need_replan and self.replan_period > 0.0:
-            if (now - self.last_replan_time).to_sec() >= self.replan_period:
-                need_replan = True
+        if (
+            not need_replan
+            and self.replan_period > 0.0
+            and (now - self.last_replan_time).to_sec() >= self.replan_period
+        ):
+            need_replan = True
 
-        if (not need_replan and self.path_world and self.replan_offpath > 0.0):
+        if not need_replan and self.path_world and self.replan_offpath > 0.0:
             x, y, _ = self.last_pose
             dmin = min(np.hypot(px - x, py - y) for (px, py) in self.path_world)
             if dmin > self.replan_offpath:
-                rospy.loginfo("FM2Planner: robot fuera de ruta (%.3f m), replanificando", dmin)
+                rospy.loginfo(
+                    "FM2Planner: robot fuera de ruta (%.3f m), replanificando", dmin
+                )
                 need_replan = True
 
         if need_replan:

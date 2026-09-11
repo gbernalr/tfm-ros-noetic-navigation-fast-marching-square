@@ -47,7 +47,6 @@ include_directories(
 ## Instalar scripts Python como nodos ROS
 catkin_install_python(
   PROGRAMS
-    src/fm2_nav_node.py
     src/fm2_costmap_node.py
     src/simple_nav_node.py
     src/fm2_planner_node.py

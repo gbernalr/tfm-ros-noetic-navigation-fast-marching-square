@@ -25,9 +25,9 @@ def main():
     msg.pose.pose.position.y = y
     msg.pose.pose.orientation.z = math.sin(yaw * 0.5)
     msg.pose.pose.orientation.w = math.cos(yaw * 0.5)
-    msg.pose.covariance[0] = std_xy ** 2
-    msg.pose.covariance[7] = std_xy ** 2
-    msg.pose.covariance[35] = std_yaw ** 2
+    msg.pose.covariance[0] = std_xy**2
+    msg.pose.covariance[7] = std_xy**2
+    msg.pose.covariance[35] = std_yaw**2
 
     # El spawn de Gazebo, AMCL y sus suscriptores arrancan en paralelo. Repetir
     # el mensaje evita perder la inicialización por una carrera de arranque.

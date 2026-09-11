@@ -11,15 +11,15 @@ la ZED física. Predictor, costmap y FM2 no distinguen la fuente simulada de la
 real.
 """
 
-from collections import deque
-from dataclasses import dataclass
 import math
 import random
+from collections import deque
+from dataclasses import dataclass
 
 import rospy
 import tf2_ros
-
 from gazebo_msgs.msg import ModelStates
+
 from rgbd_person_tracker.msg import PersonTrack, PersonTrackArray
 
 
@@ -38,22 +38,29 @@ class ZedBodyTrackingSimNode:
     def __init__(self):
         self.output_topic = rospy.get_param("~person_tracks_topic", "/person_tracks")
         self.output_frame = rospy.get_param("~output_frame", "map")
-        self.source_frame = rospy.get_param("~source_frame", "map")
         self.camera_frame = rospy.get_param("~camera_frame", "zed_sim_camera_frame")
-        self.model_prefixes = tuple(rospy.get_param(
-            "~person_model_prefixes", ["person_target", "person_"]
-        ))
+        self.model_prefixes = tuple(
+            rospy.get_param("~person_model_prefixes", ["person_target", "person_"])
+        )
 
         self.sample_rate = float(rospy.get_param("~sample_rate", 15.0))
         self.min_range = float(rospy.get_param("~min_range", 0.5))
         self.max_range = float(rospy.get_param("~max_range", 8.0))
-        self.horizontal_fov = math.radians(float(rospy.get_param("~horizontal_fov_deg", 110.0)))
-        self.simulate_sensor_noise = bool(rospy.get_param("~simulate_sensor_noise", False))
-        self.detection_probability = float(rospy.get_param("~detection_probability", 0.96))
+        self.horizontal_fov = math.radians(
+            float(rospy.get_param("~horizontal_fov_deg", 110.0))
+        )
+        self.simulate_sensor_noise = bool(
+            rospy.get_param("~simulate_sensor_noise", False)
+        )
+        self.detection_probability = float(
+            rospy.get_param("~detection_probability", 0.96)
+        )
         self.distance_probability_drop = float(
             rospy.get_param("~distance_probability_drop", 0.35)
         )
-        self.occlusion_probability = float(rospy.get_param("~occlusion_probability", 0.05))
+        self.occlusion_probability = float(
+            rospy.get_param("~occlusion_probability", 0.05)
+        )
         self.position_noise_std = float(rospy.get_param("~position_noise_std", 0.06))
         self.velocity_noise_std = float(rospy.get_param("~velocity_noise_std", 0.08))
         self.latency = float(rospy.get_param("~latency", 0.10))
@@ -81,13 +88,19 @@ class ZedBodyTrackingSimNode:
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         self.pub = rospy.Publisher(self.output_topic, PersonTrackArray, queue_size=1)
-        self.sub = rospy.Subscriber("/gazebo/model_states", ModelStates, self._cb_models, queue_size=1)
+        self.sub = rospy.Subscriber(
+            "/gazebo/model_states", ModelStates, self._cb_models, queue_size=1
+        )
         self.publish_timer = rospy.Timer(rospy.Duration(0.02), self._publish_ready)
 
         rospy.loginfo(
-            "ZED Body Tracking sim listo: frame=%s FOV=%.1fdeg rango=[%.1f, %.1f]m, ruido=%s, salida=%s",
-            self.camera_frame, math.degrees(self.horizontal_fov), self.min_range,
-            self.max_range, "activo" if self.simulate_sensor_noise else "desactivado",
+            "ZED Body Tracking sim listo: frame=%s FOV=%.1fdeg "
+            "rango=[%.1f, %.1f]m, ruido=%s, salida=%s",
+            self.camera_frame,
+            math.degrees(self.horizontal_fov),
+            self.min_range,
+            self.max_range,
+            "activo" if self.simulate_sensor_noise else "desactivado",
             self.output_topic,
         )
 
@@ -102,7 +115,6 @@ class ZedBodyTrackingSimNode:
             return
         cam_x, cam_y, cam_yaw = camera
 
-        detected_models = set()
         for index, model_name in enumerate(msg.name):
             if not self._is_person_model(model_name):
                 continue
@@ -117,8 +129,13 @@ class ZedBodyTrackingSimNode:
             track = self.tracks_by_model.get(model_name)
             if track is None:
                 track = SimTrack(
-                    track_id=self.next_track_id, x=x, y=y, vx=vx, vy=vy,
-                    confidence=1.0, last_detection=now,
+                    track_id=self.next_track_id,
+                    x=x,
+                    y=y,
+                    vx=vx,
+                    vy=vy,
+                    confidence=1.0,
+                    last_detection=now,
                 )
                 self.next_track_id += 1
                 self.tracks_by_model[model_name] = track
@@ -130,10 +147,11 @@ class ZedBodyTrackingSimNode:
             track.vy = vy + self.random.gauss(0.0, self.velocity_noise_std)
             track.confidence = confidence
             track.last_detection = now
-            detected_models.add(model_name)
 
         output_tracks = self._tracked_or_predicted_tracks(now)
-        self.pending_outputs.append((now + rospy.Duration(max(0.0, self.latency)), now, output_tracks))
+        self.pending_outputs.append(
+            (now + rospy.Duration(max(0.0, self.latency)), now, output_tracks)
+        )
 
         # Elimina identificadores que han estado demasiado tiempo fuera de
         # observación. Si vuelven a aparecer se les asignará un ID nuevo.
@@ -145,14 +163,22 @@ class ZedBodyTrackingSimNode:
     def _camera_pose(self, stamp):
         try:
             tf = self.tf_buffer.lookup_transform(
-                self.output_frame, self.camera_frame,
+                self.output_frame,
+                self.camera_frame,
                 stamp if stamp != rospy.Time() else rospy.Time(0),
                 rospy.Duration(0.05),
             )
-        except Exception as exc:
+        except (
+            tf2_ros.LookupException,
+            tf2_ros.ConnectivityException,
+            tf2_ros.ExtrapolationException,
+        ) as exc:
             rospy.logwarn_throttle(
-                2.0, "ZED sim: TF %s -> %s no disponible: %s",
-                self.output_frame, self.camera_frame, exc,
+                2.0,
+                "ZED sim: TF %s -> %s no disponible: %s",
+                self.output_frame,
+                self.camera_frame,
+                exc,
             )
             return None
 
@@ -165,7 +191,10 @@ class ZedBodyTrackingSimNode:
         return float(t.x), float(t.y), yaw
 
     def _is_person_model(self, model_name):
-        return any(model_name == prefix or model_name.startswith(prefix) for prefix in self.model_prefixes)
+        return any(
+            model_name == prefix or model_name.startswith(prefix)
+            for prefix in self.model_prefixes
+        )
 
     def _estimate_model_velocity(self, model_name, x, y, stamp):
         previous = self.model_motion.get(model_name)
@@ -193,13 +222,20 @@ class ZedBodyTrackingSimNode:
         return abs(bearing) <= self.horizontal_fov * 0.5, range_m
 
     def _detect(self, range_m):
-        normalized_range = (range_m - self.min_range) / max(self.max_range - self.min_range, 1e-6)
-        probability = self.detection_probability - self.distance_probability_drop * normalized_range
+        normalized_range = (range_m - self.min_range) / max(
+            self.max_range - self.min_range, 1e-6
+        )
+        probability = (
+            self.detection_probability
+            - self.distance_probability_drop * normalized_range
+        )
         probability *= 1.0 - self.occlusion_probability
         return self.random.random() < max(0.0, min(1.0, probability))
 
     def _confidence_for_range(self, range_m):
-        normalized_range = (range_m - self.min_range) / max(self.max_range - self.min_range, 1e-6)
+        normalized_range = (range_m - self.min_range) / max(
+            self.max_range - self.min_range, 1e-6
+        )
         return max(0.1, min(1.0, 1.0 - 0.55 * normalized_range))
 
     def _tracked_or_predicted_tracks(self, now):
@@ -210,16 +246,20 @@ class ZedBodyTrackingSimNode:
                 continue
             # Simula el estado SEARCHING de un tracker: durante un periodo breve
             # conserva ID y predice la posición si la detección se pierde.
-            confidence = track.confidence * max(0.0, 1.0 - age / max(self.tracking_timeout, 1e-3))
-            output.append(SimTrack(
-                track_id=track.track_id,
-                x=track.x + track.vx * age,
-                y=track.y + track.vy * age,
-                vx=track.vx,
-                vy=track.vy,
-                confidence=confidence,
-                last_detection=track.last_detection,
-            ))
+            confidence = track.confidence * max(
+                0.0, 1.0 - age / max(self.tracking_timeout, 1e-3)
+            )
+            output.append(
+                SimTrack(
+                    track_id=track.track_id,
+                    x=track.x + track.vx * age,
+                    y=track.y + track.vy * age,
+                    vx=track.vx,
+                    vy=track.vy,
+                    confidence=confidence,
+                    last_detection=track.last_detection,
+                )
+            )
         return output
 
     def _publish_ready(self, _event):
