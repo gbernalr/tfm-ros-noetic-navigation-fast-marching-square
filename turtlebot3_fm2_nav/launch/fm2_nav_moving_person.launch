@@ -2,7 +2,7 @@
   <!-- =========================================================
        fm2_nav_moving_person.launch
        Igual que fm2_nav.launch (Turtlebot3 + map + AMCL + FM2),
-       pero añade una persona (modelo de rgbd_sim) patrullando el
+       pero añade hasta tres personas (modelos de rgbd_sim) patrullando el
        escenario, y un publicador "ground-truth" que la expone en
        /person_tracks para que el costmap FM2 la evite.
        ========================================================= -->
@@ -15,6 +15,8 @@
   <arg name="open_rviz" default="true"/>
   <arg name="simulate_sensor_noise" default="false"
        doc="activa ruido, latencia y pérdidas en el Body Tracking simulado"/>
+  <arg name="num_persons" default="1"
+       doc="número de personas simuladas [1, 2, 3]"/>
 
   <!-- Posición inicial del robot en Gazebo -->
   <arg name="x_pos" default="-2.0"/>
@@ -62,11 +64,62 @@
   <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf"
         args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -Y $(arg yaw) -param zed_robot_description" />
 
-  <!-- Spawnear la persona -->
-  <node pkg="gazebo_ros" type="spawn_model" name="spawn_person_target"
-        args="-file $(find rgbd_sim)/models/person_target/model.sdf -sdf -model person_target
-              -x $(arg person_x) -y $(arg person_y) -z 0"
-        output="screen" />
+  <!-- Las personas se crean con nombres person_N, que reconoce el simulador
+       de Body Tracking. Las rutas empiezan en esquinas distintas para evitar
+       que los modelos se superpongan. -->
+  <group if="$(eval int(arg('num_persons')) >= 1)">
+    <node pkg="gazebo_ros" type="spawn_model" name="spawn_person_0"
+          args="-file $(find rgbd_sim)/models/person_target/model.sdf -sdf -model person_0
+                -x $(arg person_x) -y $(arg person_y) -z 0"
+          output="screen" />
+    <node pkg="turtlebot3_fm2_nav" type="person_patrol_mover.py"
+          name="person_patrol_mover_0" output="screen">
+      <param name="model_name" value="person_0"/>
+      <param name="speed" value="$(arg person_speed)"/>
+      <rosparam param="waypoints">
+        - [1.0, 1.0]
+        - [1.0, -1.0]
+        - [-1.0, -1.0]
+        - [-1.0, 1.0]
+      </rosparam>
+    </node>
+  </group>
+
+  <group if="$(eval int(arg('num_persons')) >= 2)">
+    <node pkg="gazebo_ros" type="spawn_model" name="spawn_person_1"
+          args="-file $(find rgbd_sim)/models/person_target/model.sdf -sdf -model person_1
+                -x 1.0 -y -1.0 -z 0"
+          output="screen" />
+    <node pkg="turtlebot3_fm2_nav" type="person_patrol_mover.py"
+          name="person_patrol_mover_1" output="screen">
+      <param name="model_name" value="person_1"/>
+      <param name="speed" value="$(arg person_speed)"/>
+      <rosparam param="waypoints">
+        - [1.0, -1.0]
+        - [-1.0, -1.0]
+        - [-1.0, 1.0]
+        - [1.0, 1.0]
+      </rosparam>
+    </node>
+  </group>
+
+  <group if="$(eval int(arg('num_persons')) >= 3)">
+    <node pkg="gazebo_ros" type="spawn_model" name="spawn_person_2"
+          args="-file $(find rgbd_sim)/models/person_target/model.sdf -sdf -model person_2
+                -x -1.0 -y -1.0 -z 0"
+          output="screen" />
+    <node pkg="turtlebot3_fm2_nav" type="person_patrol_mover.py"
+          name="person_patrol_mover_2" output="screen">
+      <param name="model_name" value="person_2"/>
+      <param name="speed" value="$(arg person_speed)"/>
+      <rosparam param="waypoints">
+        - [-1.0, -1.0]
+        - [-1.0, 1.0]
+        - [1.0, 1.0]
+        - [1.0, -1.0]
+      </rosparam>
+    </node>
+  </group>
 
   <!-- =========================
        TURTLEBOT3 (BRINGUP)
@@ -100,17 +153,6 @@
   <!-- =========================
        PERSONA: patrulla + Body Tracking ZED simulado
        ========================= -->
-  <node pkg="turtlebot3_fm2_nav" type="person_patrol_mover.py" name="person_patrol_mover" output="screen">
-    <param name="model_name" value="person_target"/>
-    <param name="speed" value="$(arg person_speed)"/>
-    <rosparam param="waypoints">
-      - [1.0, 1.0]
-      - [1.0, -1.0]
-      - [-1.0, -1.0]
-      - [-1.0, 1.0]
-    </rosparam>
-  </node>
-
   <node pkg="turtlebot3_fm2_nav" type="zed_body_tracking_sim_node.py"
         name="zed_body_tracking_sim_node" output="screen">
     <param name="person_tracks_topic" value="/person_tracks"/>
