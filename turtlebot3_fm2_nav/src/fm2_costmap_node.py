@@ -5,7 +5,9 @@ ROS parameters are documented in ``ROS_PARAMETERS.md``.
 """
 
 import math
-from typing import Optional, Tuple
+from functools import wraps
+from threading import RLock
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 import rospy
@@ -16,11 +18,24 @@ from rgbd_person_tracker.msg import PersonPredictionArray, PersonTrack, PersonTr
 from sensor_msgs.msg import LaserScan
 
 
+def _synchronized(method: Callable[..., object]) -> Callable[..., object]:
+    """Serialize mutations and publications of the costmap layers."""
+
+    @wraps(method)
+    def wrapped(*args: object, **kwargs: object) -> object:
+        self = args[0]
+        with self._state_lock:
+            return method(*args, **kwargs)
+
+    return wrapped
+
+
 class FM2CostmapNode:
     """ROS node that maintains and publishes the combined navigation costmap."""
 
     def __init__(self) -> None:
         """Read configuration and initialize costmap layers and ROS interfaces."""
+        self._state_lock = RLock()
         self.frame_map = rospy.get_param("~frame_map", "map")
         self.map_topic = rospy.get_param("~map_topic", "/map")
         self.scan_topic = rospy.get_param("~scan_topic", "/scan")
@@ -115,6 +130,7 @@ class FM2CostmapNode:
         rospy.loginfo("FM2 costmap initialized; waiting for map, scan, and person data")
 
     # ---------------------------- ROS callbacks ----------------------------
+    @_synchronized
     def cb_map(self, msg: OccupancyGrid) -> None:
         """Initialize the static layer from an occupancy-grid message."""
         # Store the static map as an int8 grid.
@@ -149,6 +165,7 @@ class FM2CostmapNode:
 
         self.publish_costmap()
 
+    @_synchronized
     def cb_persons(self, msg: PersonTrackArray) -> None:
         """Render tracks when no fresh external prediction is available."""
         if self.static_grid is None:
@@ -230,6 +247,7 @@ class FM2CostmapNode:
                 predicted_points[-1] if predicted_points else None,
             )
 
+    @_synchronized
     def cb_person_predictions(self, msg: PersonPredictionArray) -> None:
         """Render current positions and uncertainty ellipses from predictions."""
         if self.static_grid is None or not self.person_predictions_enabled:
@@ -310,6 +328,7 @@ class FM2CostmapNode:
             rospy.Time.now() - self.last_person_prediction_msg_time
         ).to_sec() <= self.person_predictions_timeout
 
+    @_synchronized
     def _person_timeout_cb(self, _event: object) -> None:
         """Clear stale person occupancy after the configured track timeout."""
         if self.static_grid is None or self.person_grid is None:
@@ -333,6 +352,7 @@ class FM2CostmapNode:
                 age,
             )
 
+    @_synchronized
     def cb_scan(self, scan: LaserScan) -> None:
         """Update dynamic obstacle memory from a laser scan."""
         if self.static_grid is None:
@@ -556,6 +576,7 @@ class FM2CostmapNode:
         iy = int((y - self.map_oy) / self.map_res)
         return ix, iy
 
+    @_synchronized
     def publish_costmap(self) -> None:
         """Merge all layers and publish the resulting occupancy grid."""
         if self.static_grid is None:

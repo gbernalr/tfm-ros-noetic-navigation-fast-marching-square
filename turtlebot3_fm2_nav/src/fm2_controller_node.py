@@ -5,7 +5,9 @@ ROS parameters are documented in ``ROS_PARAMETERS.md``.
 """
 
 import math
-from typing import Tuple
+from functools import wraps
+from threading import RLock
+from typing import Callable, Tuple
 
 import numpy as np
 import rospy
@@ -15,11 +17,24 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Quaternion
 from nav_msgs.msg import Path
 
 
+def _synchronized(method: Callable[..., object]) -> Callable[..., object]:
+    """Serialize updates and reads of controller state across ROS threads."""
+
+    @wraps(method)
+    def wrapped(*args: object, **kwargs: object) -> object:
+        self = args[0]
+        with self._state_lock:
+            return method(*args, **kwargs)
+
+    return wrapped
+
+
 class FM2Controller:
     """ROS node that follows a global path and aligns with the goal heading."""
 
     def __init__(self) -> None:
         """Read configuration and initialize ROS interfaces and controller state."""
+        self._state_lock = RLock()
         # Coordinate frames
         self.frame_map = rospy.get_param("~frame_map", "map")
 
@@ -98,6 +113,7 @@ class FM2Controller:
 
     # --------------------------- ROS callbacks ---------------------------
 
+    @_synchronized
     def cb_path(self, msg: Path) -> None:
         """Store a newly planned path and resume tracking near the robot."""
         # Convert the ROS Path into a list of (x, y) points.
@@ -123,6 +139,7 @@ class FM2Controller:
             self.path_world = None
             self.path_idx = 0
 
+    @_synchronized
     def cb_goal(self, msg: PoseStamped) -> None:
         """Store the requested final orientation from a navigation goal."""
         # The controller only uses the goal yaw during final alignment.
@@ -144,6 +161,7 @@ class FM2Controller:
 
         self.mode_align = False
 
+    @_synchronized
     def cb_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         """Update the robot pose from AMCL, transforming it when required."""
         if msg.header.frame_id != self.frame_map:
@@ -236,6 +254,7 @@ class FM2Controller:
         )
         self.pub_cmd.publish(twist)
 
+    @_synchronized
     def _control_step(self) -> None:
         """Execute one iteration of the path-following state machine."""
         if self.mode_align:

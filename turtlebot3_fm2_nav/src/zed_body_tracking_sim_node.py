@@ -12,12 +12,26 @@ import math
 import random
 from collections import deque
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from functools import wraps
+from threading import RLock
+from typing import Callable, List, Optional, Tuple
 
 import rospy
 import tf2_ros
 from gazebo_msgs.msg import ModelStates
 from rgbd_person_tracker.msg import PersonTrack, PersonTrackArray
+
+
+def _synchronized(method: Callable[..., object]) -> Callable[..., object]:
+    """Serialize access to a node's mutable runtime state."""
+
+    @wraps(method)
+    def wrapped(*args: object, **kwargs: object) -> object:
+        self = args[0]
+        with self._state_lock:
+            return method(*args, **kwargs)
+
+    return wrapped
 
 
 @dataclass
@@ -38,8 +52,10 @@ class ZedBodyTrackingSimNode:
 
     def __init__(self) -> None:
         """Read sensor configuration and initialize tracking and ROS interfaces."""
+        self._state_lock = RLock()
         self.output_topic = rospy.get_param("~person_tracks_topic", "/person_tracks")
         self.output_frame = rospy.get_param("~output_frame", "map")
+        self.gazebo_world_frame = rospy.get_param("~gazebo_world_frame", "world")
         self.camera_frame = rospy.get_param("~camera_frame", "zed_sim_camera_frame")
         self.model_prefixes = tuple(
             rospy.get_param("~person_model_prefixes", ["person_target", "person_"])
@@ -106,6 +122,7 @@ class ZedBodyTrackingSimNode:
             self.output_topic,
         )
 
+    @_synchronized
     def _cb_models(self, msg: ModelStates) -> None:
         """Sample visible person models and update their simulated tracks."""
         now = rospy.Time.now()
@@ -117,13 +134,22 @@ class ZedBodyTrackingSimNode:
         if camera is None:
             return
         cam_x, cam_y, cam_yaw = camera
+        world_to_output = self._world_to_output_transform(now)
+        if world_to_output is None:
+            return
+        world_x, world_y, world_yaw = world_to_output
+        cos_world_yaw = math.cos(world_yaw)
+        sin_world_yaw = math.sin(world_yaw)
 
         for index, model_name in enumerate(msg.name):
             if not self._is_person_model(model_name):
                 continue
 
             pose = msg.pose[index]
-            x, y = float(pose.position.x), float(pose.position.y)
+            gazebo_x = float(pose.position.x)
+            gazebo_y = float(pose.position.y)
+            x = world_x + cos_world_yaw * gazebo_x - sin_world_yaw * gazebo_y
+            y = world_y + sin_world_yaw * gazebo_x + cos_world_yaw * gazebo_y
             vx, vy = self._estimate_model_velocity(model_name, x, y, now)
             visible, range_m = self._is_visible(x, y, cam_x, cam_y, cam_yaw)
             if not visible or not self._detect(range_m):
@@ -162,6 +188,41 @@ class ZedBodyTrackingSimNode:
             age = (now - self.tracks_by_model[model_name].last_detection).to_sec()
             if age > self.tracking_timeout:
                 del self.tracks_by_model[model_name]
+
+    def _world_to_output_transform(
+        self, stamp: rospy.Time
+    ) -> Optional[Tuple[float, float, float]]:
+        """Return the Gazebo-world pose expressed in the configured output frame."""
+        if self.gazebo_world_frame == self.output_frame:
+            return 0.0, 0.0, 0.0
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.output_frame,
+                self.gazebo_world_frame,
+                stamp if stamp != rospy.Time() else rospy.Time(0),
+                rospy.Duration(0.05),
+            )
+        except (
+            tf2_ros.LookupException,
+            tf2_ros.ConnectivityException,
+            tf2_ros.ExtrapolationException,
+        ) as exc:
+            rospy.logwarn_throttle(
+                2.0,
+                "ZED simulator could not transform %s <- %s: %s",
+                self.output_frame,
+                self.gazebo_world_frame,
+                exc,
+            )
+            return None
+
+        q = tf.transform.rotation
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+        translation = tf.transform.translation
+        return float(translation.x), float(translation.y), yaw
 
     def _camera_pose(self, stamp: rospy.Time) -> Optional[Tuple[float, float, float]]:
         """Return the camera's planar map pose at a given timestamp."""
@@ -281,6 +342,7 @@ class ZedBodyTrackingSimNode:
             )
         return output
 
+    @_synchronized
     def _publish_ready(self, _event: object) -> None:
         """Publish the newest simulated output whose latency has elapsed."""
         now = rospy.Time.now()

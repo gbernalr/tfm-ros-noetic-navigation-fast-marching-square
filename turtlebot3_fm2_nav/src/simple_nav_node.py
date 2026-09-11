@@ -5,7 +5,9 @@ ROS parameters are documented in ``ROS_PARAMETERS.md``.
 """
 
 import math
-from typing import List, Tuple
+from functools import wraps
+from threading import RLock
+from typing import Callable, List, Tuple
 
 import cv2
 import numpy as np
@@ -17,12 +19,25 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Quaternion
 from nav_msgs.msg import OccupancyGrid, Path
 
 
+def _synchronized(method: Callable[..., object]) -> Callable[..., object]:
+    """Serialize callback and control-loop access to navigation state."""
+
+    @wraps(method)
+    def wrapped(*args: object, **kwargs: object) -> object:
+        self = args[0]
+        with self._state_lock:
+            return method(*args, **kwargs)
+
+    return wrapped
+
+
 class FM2TestPlanner:
     """Combined FM2 planning and path-tracking node used by the simple launch."""
 
     def __init__(self) -> None:
         """Initialize the ROS node, configuration, state, and interfaces."""
         rospy.init_node("fm2_test_planner")
+        self._state_lock = RLock()
 
         self.frame_map = rospy.get_param("~frame_map", "map")
         self.replan_period = float(rospy.get_param("~replan_period", 0.2))
@@ -65,6 +80,7 @@ class FM2TestPlanner:
 
         self.last_replan_time = rospy.Time.now()
 
+    @_synchronized
     def cb_map(self, msg: OccupancyGrid) -> None:
         """Convert the latest occupancy grid into a binary FM2 map."""
         w = msg.info.width
@@ -79,6 +95,7 @@ class FM2TestPlanner:
         obs = np.logical_or(occ, unk).astype(np.uint8)
         self.map_bin = (1 - obs).astype(np.uint8)
 
+    @_synchronized
     def cb_goal(self, msg: PoseStamped) -> None:
         """Transform, store, and immediately plan toward a new goal."""
         pose = msg
@@ -100,6 +117,7 @@ class FM2TestPlanner:
         rospy.loginfo("Simple FM2 navigator received goal %s", self.goal_world)
         self._plan(trigger="goal")
 
+    @_synchronized
     def cb_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         """Update the current robot pose from AMCL."""
         if msg.header.frame_id != self.frame_map:
@@ -166,6 +184,7 @@ class FM2TestPlanner:
             path.poses.append(ps)
         self.pub_path.publish(path)
 
+    @_synchronized
     def _plan(self, trigger: str = "timer") -> None:
         """Plan and publish a path from the current robot pose to the goal."""
         if self.map_bin is None:
@@ -247,6 +266,7 @@ class FM2TestPlanner:
         distance = min(np.hypot(px - x, py - y) for px, py in window)
         return distance > self.replan_offpath
 
+    @_synchronized
     def _control_step(self) -> None:
         """Execute one path-tracking iteration."""
         if self.path_world is None or self.last_pose is None or self.goal_world is None:

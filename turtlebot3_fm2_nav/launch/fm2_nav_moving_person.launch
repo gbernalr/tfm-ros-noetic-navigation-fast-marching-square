@@ -134,6 +134,11 @@
   <node pkg="tf2_ros" type="static_transform_publisher" name="zed_sim_optical_frame"
         args="0 0 0 -0.5 0.5 -0.5 0.5 zed_sim_camera_frame zed_sim_camera_optical_frame"/>
 
+  <!-- Gazebo ModelStates use world coordinates. This simulation map is aligned
+       with Gazebo, so declare the identity world-to-map transform explicitly. -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="gazebo_world_to_map"
+        args="0 0 0 0 0 0 1 map world"/>
+
   <!-- =========================
        MAP SERVER
        ========================= -->
@@ -157,6 +162,7 @@
         name="zed_body_tracking_sim_node" output="screen">
     <param name="person_tracks_topic" value="/person_tracks"/>
     <param name="output_frame" value="map"/>
+    <param name="gazebo_world_frame" value="world"/>
     <param name="camera_frame" value="zed_sim_camera_frame"/>
     <rosparam param="person_model_prefixes">[person_target, person_]</rosparam>
     <!-- Salida de Body Tracking: visión, frecuencia, ruido y latencia

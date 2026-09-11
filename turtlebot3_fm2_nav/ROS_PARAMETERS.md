@@ -114,6 +114,7 @@ operating domain; runtime validation will be added separately.
 |---|---:|---:|---|
 | `~person_tracks_topic` | valid ROS topic name | `/person_tracks` | Simulated tracking output. |
 | `~output_frame` | non-empty ROS frame ID | `map` | Frame declared on output tracks. |
+| `~gazebo_world_frame` | non-empty ROS frame ID | `world` | Frame in which Gazebo model states are expressed; it is transformed into `~output_frame`. |
 | `~camera_frame` | non-empty ROS frame ID | `zed_sim_camera_frame` | Camera frame used for visibility checks. |
 | `~person_model_prefixes` | non-empty list of non-empty strings | `[person_target, person_]` | Gazebo model-name filters. |
 | `~sample_rate` | Hz, > 0 | `15.0` | Sensor sampling frequency. |
