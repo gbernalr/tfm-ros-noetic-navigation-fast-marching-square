@@ -6,9 +6,8 @@ ROS parameters are documented in ``ROS_PARAMETERS.md``.
 
 import math
 from dataclasses import dataclass
-from functools import wraps
 from threading import RLock
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -20,17 +19,21 @@ from fm2.entities import FM2Map
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Quaternion
 from nav_msgs.msg import OccupancyGrid, Path
 
-
-def _synchronized(method: Callable[..., object]) -> Callable[..., object]:
-    """Serialize updates to a node's mutable ROS callback state."""
-
-    @wraps(method)
-    def wrapped(*args: object, **kwargs: object) -> object:
-        self = args[0]
-        with self._state_lock:
-            return method(*args, **kwargs)
-
-    return wrapped
+from nav_validation import (
+    require_finite_xy,
+    require_float,
+    require_int,
+    require_message_frame,
+    require_nonempty_string,
+    require_occupancy_grid,
+)
+from navigation_utils import (
+    GridGeometry,
+    grid_to_world,
+    quaternion_yaw,
+    synchronized,
+    world_to_grid,
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,7 @@ class PlanningSnapshot:
     map_res: float
     map_ox: float
     map_oy: float
+    map_origin_yaw: float
 
 
 class FM2Planner:
@@ -52,24 +56,42 @@ class FM2Planner:
         """Read configuration and initialize planner state and ROS interfaces."""
         self._state_lock = RLock()
         # Coordinate frames
-        self.frame_map = rospy.get_param("~frame_map", "map")
-        self.frame_base = rospy.get_param("~frame_base", "base_link")
+        self.frame_map = require_nonempty_string(
+            "~frame_map", rospy.get_param("~frame_map", "map")
+        )
+        self.frame_base = require_nonempty_string(
+            "~frame_base", rospy.get_param("~frame_base", "base_link")
+        )
 
         # Planning map
-        self.inflation = int(rospy.get_param("~inflate", 0))
-        self.occupancy_threshold = int(rospy.get_param("~occupancy_threshold", 50))
-        self.tf_timeout = rospy.Duration(float(rospy.get_param("~tf_timeout", 0.5)))
+        self.inflation = require_int("~inflate", rospy.get_param("~inflate", 0), 0)
+        self.occupancy_threshold = require_int(
+            "~occupancy_threshold", rospy.get_param("~occupancy_threshold", 50), 0, 100
+        )
+        self.tf_timeout = rospy.Duration(
+            require_float(
+                "~tf_timeout",
+                rospy.get_param("~tf_timeout", 0.5),
+                0.0,
+                minimum_inclusive=False,
+            )
+        )
 
         # Replanning policy
-        self.replan_offpath = float(rospy.get_param("~replan_offpath", 0.6))
-        self.replan_period = float(rospy.get_param("~replan_period", 1.0))
-        self.rate_hz = int(rospy.get_param("~rate", 20))
+        self.replan_offpath = require_float(
+            "~replan_offpath", rospy.get_param("~replan_offpath", 0.6), 0.0
+        )
+        self.replan_period = require_float(
+            "~replan_period", rospy.get_param("~replan_period", 1.0), 0.0
+        )
+        self.rate_hz = require_int("~rate", rospy.get_param("~rate", 20), 1)
 
         # Map state
         self.grid_bin = None
         self.map_res = None
         self.map_ox = None
         self.map_oy = None
+        self.map_origin_yaw = None
 
         # Planning state
         self.goal_world = None  # Goal (x, y) in the map frame.
@@ -99,7 +121,7 @@ class FM2Planner:
 
     # ---------------- Collision and coordinate utilities ----------------
 
-    @_synchronized
+    @synchronized
     def check_pts_collisions(
         self,
         pts_world: List[Tuple[float, float]],
@@ -151,13 +173,14 @@ class FM2Planner:
 
         return result
 
-    def _clear_path_for_snapshot(
-        self, goal_world: Tuple[float, float], grid_bin: np.ndarray
-    ) -> None:
-        """Clear a path only when it belongs to the failed planning snapshot."""
+    def _clear_path_for_goal(self, goal_world: Tuple[float, float]) -> None:
+        """Cancel a failed route without affecting a newer navigation goal."""
         with self._state_lock:
-            if self.goal_world == goal_world and self.grid_bin is grid_bin:
+            if self.goal_world == goal_world:
+                had_path = self.path_world is not None
                 self.path_world = None
+                if had_path:
+                    self._publish_path([])
 
     @staticmethod
     def _validate_endpoint(
@@ -195,15 +218,16 @@ class FM2Planner:
     def _path_is_collision_free(
         pts_world: List[Tuple[float, float]],
         binary: np.ndarray,
-        map_res: float,
-        map_ox: float,
-        map_oy: float,
+        snapshot: PlanningSnapshot,
     ) -> bool:
         """Return whether all path points lie in free cells of a map snapshot."""
         height, width = binary.shape
+        cos_yaw = math.cos(snapshot.map_origin_yaw)
+        sin_yaw = math.sin(snapshot.map_origin_yaw)
         for x, y in pts_world:
-            ix = math.floor((x - map_ox) / map_res)
-            iy = math.floor((y - map_oy) / map_res)
+            dx, dy = x - snapshot.map_ox, y - snapshot.map_oy
+            ix = math.floor((cos_yaw * dx + sin_yaw * dy) / snapshot.map_res)
+            iy = math.floor((-sin_yaw * dx + cos_yaw * dy) / snapshot.map_res)
             if not (0 <= ix < width and 0 <= iy < height) or binary[iy, ix] == 0:
                 return False
         return True
@@ -235,21 +259,23 @@ class FM2Planner:
     @staticmethod
     def _yaw_from_quat(q: Quaternion) -> float:
         """Return the planar yaw represented by a quaternion-like object."""
-        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
-        return math.atan2(siny_cosp, cosy_cosp)
+        return quaternion_yaw(q)
 
     def _world_to_grid(self, x: float, y: float) -> Tuple[int, int]:
         """Convert map-frame coordinates into occupancy-grid indices."""
-        ix = int((x - self.map_ox) / self.map_res)
-        iy = int((y - self.map_oy) / self.map_res)
-        return ix, iy
+        return world_to_grid(
+            x,
+            y,
+            GridGeometry(self.map_res, self.map_ox, self.map_oy, self.map_origin_yaw),
+        )
 
     def _grid_to_world(self, ix: int, iy: int) -> Tuple[float, float]:
         """Return the world coordinates of the center of a grid cell."""
-        x = self.map_ox + (ix + 0.5) * self.map_res
-        y = self.map_oy + (iy + 0.5) * self.map_res
-        return x, y
+        return grid_to_world(
+            ix,
+            iy,
+            GridGeometry(self.map_res, self.map_ox, self.map_oy, self.map_origin_yaw),
+        )
 
     def _transform_pose(self, pose_stamped: PoseStamped, to_frame: str) -> PoseStamped:
         """Transform a stamped pose into the requested frame."""
@@ -279,14 +305,21 @@ class FM2Planner:
 
     # ---------------------------- ROS callbacks ----------------------------
 
-    @_synchronized
+    @synchronized
     def cb_map(self, msg: OccupancyGrid) -> None:
         """Convert the latest combined costmap into a binary FM2 grid."""
+        try:
+            require_occupancy_grid("costmap", msg)
+            require_message_frame("costmap", msg, self.frame_map)
+        except ValueError as error:
+            rospy.logwarn("FM2 planner rejected an invalid costmap: %s", error)
+            return
         w = msg.info.width
         h = msg.info.height
         self.map_res = msg.info.resolution
         self.map_ox = msg.info.origin.position.x
         self.map_oy = msg.info.origin.position.y
+        self.map_origin_yaw = self._yaw_from_quat(msg.info.origin.orientation)
 
         data = np.array(msg.data, dtype=np.int16).reshape(h, w)
 
@@ -298,9 +331,12 @@ class FM2Planner:
         grid_bin.setflags(write=False)
         self.grid_bin = grid_bin
 
-    @_synchronized
+    @synchronized
     def cb_goal(self, msg: PoseStamped) -> None:
         """Store a new navigation goal in the configured map frame."""
+        if not msg.header.frame_id:
+            rospy.logwarn("FM2 planner rejected a goal without frame_id")
+            return
         if msg.header.frame_id != self.frame_map:
             try:
                 msg = self._transform_pose(msg, self.frame_map)
@@ -312,6 +348,11 @@ class FM2Planner:
                 rospy.logwarn("FM2 planner could not transform the goal: %s", e)
                 return
 
+        try:
+            require_finite_xy("goal", msg.pose.position.x, msg.pose.position.y)
+        except ValueError as error:
+            rospy.logwarn("FM2 planner rejected an invalid goal: %s", error)
+            return
         self.goal_world = (msg.pose.position.x, msg.pose.position.y)
         rospy.loginfo(
             "FM2 planner received a new goal at (%.3f, %.3f)",
@@ -321,10 +362,16 @@ class FM2Planner:
 
         self.path_world = None
         self.last_replan_time = rospy.Time(0)
+        self._publish_path([])
 
-    @_synchronized
+    @synchronized
     def cb_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         """Update the robot pose from AMCL, transforming it when required."""
+        if not msg.header.frame_id:
+            rospy.logwarn_throttle(
+                2.0, "FM2 planner rejected an AMCL pose without frame_id"
+            )
+            return
         if msg.header.frame_id != self.frame_map:
             try:
                 pose = PoseStamped()
@@ -346,6 +393,9 @@ class FM2Planner:
             y = msg.pose.pose.position.y
             yaw = self._yaw_from_quat(msg.pose.pose.orientation)
 
+        if not all(math.isfinite(value) for value in (x, y, yaw)):
+            rospy.logwarn_throttle(2.0, "FM2 planner rejected a non-finite AMCL pose")
+            return
         self.last_pose = (x, y, yaw)
 
     # --------------------------- Planning logic ---------------------------
@@ -384,12 +434,13 @@ class FM2Planner:
             map_res = self.map_res
             map_ox = self.map_ox
             map_oy = self.map_oy
+            map_origin_yaw = self.map_origin_yaw
 
         if grid_bin is None or goal_world is None:
             return None
         if map_res is None or map_res <= 0.0:
             rospy.logwarn("FM2 planner received an invalid costmap resolution")
-            self._clear_path_for_snapshot(goal_world, grid_bin)
+            self._clear_path_for_goal(goal_world)
             return None
         if last_pose is None:
             if not self._update_pose_from_tf():
@@ -406,6 +457,7 @@ class FM2Planner:
             map_res=map_res,
             map_ox=map_ox,
             map_oy=map_oy,
+            map_origin_yaw=map_origin_yaw,
         )
 
     def _plan_from_current_pose(self) -> None:
@@ -419,13 +471,18 @@ class FM2Planner:
         map_res = snapshot.map_res
         map_ox = snapshot.map_ox
         map_oy = snapshot.map_oy
+        map_origin_yaw = snapshot.map_origin_yaw
         sx, sy, _ = snapshot.last_pose
         gx, gy = goal_world
 
-        start_ix = math.floor((sx - map_ox) / map_res)
-        start_iy = math.floor((sy - map_oy) / map_res)
-        goal_ix = math.floor((gx - map_ox) / map_res)
-        goal_iy = math.floor((gy - map_oy) / map_res)
+        cos_yaw = math.cos(map_origin_yaw)
+        sin_yaw = math.sin(map_origin_yaw)
+        start_dx, start_dy = sx - map_ox, sy - map_oy
+        goal_dx, goal_dy = gx - map_ox, gy - map_oy
+        start_ix = math.floor((cos_yaw * start_dx + sin_yaw * start_dy) / map_res)
+        start_iy = math.floor((-sin_yaw * start_dx + cos_yaw * start_dy) / map_res)
+        goal_ix = math.floor((cos_yaw * goal_dx + sin_yaw * goal_dy) / map_res)
+        goal_iy = math.floor((-sin_yaw * goal_dx + cos_yaw * goal_dy) / map_res)
 
         binary = grid_bin.copy()
 
@@ -440,31 +497,35 @@ class FM2Planner:
             binary = 1 - inv
 
         if not self._validate_endpoint("start", (start_ix, start_iy), (sx, sy), binary):
-            self._clear_path_for_snapshot(goal_world, grid_bin)
+            self._clear_path_for_goal(goal_world)
             return
         if not self._validate_endpoint("goal", (goal_ix, goal_iy), (gx, gy), binary):
-            self._clear_path_for_snapshot(goal_world, grid_bin)
+            self._clear_path_for_goal(goal_world)
             return
 
         path = self._solve_fm2_path(binary, (start_iy, start_ix), (goal_iy, goal_ix))
         if path is None:
-            self._clear_path_for_snapshot(goal_world, grid_bin)
+            self._clear_path_for_goal(goal_world)
             return
 
         rows, cols = path
         # ROS Noetic uses Python 3.8, which does not support zip(strict=...).
         pts = [
             (
-                map_ox + (int(col) + 0.5) * map_res,
-                map_oy + (int(row) + 0.5) * map_res,
+                map_ox
+                + cos_yaw * (int(col) + 0.5) * map_res
+                - sin_yaw * (int(row) + 0.5) * map_res,
+                map_oy
+                + sin_yaw * (int(col) + 0.5) * map_res
+                + cos_yaw * (int(row) + 0.5) * map_res,
             )
             for row, col in zip(rows, cols)  # noqa: B905
         ]
 
         # Validate the generated path against the planning grid.
-        if not self._path_is_collision_free(pts, binary, map_res, map_ox, map_oy):
+        if not self._path_is_collision_free(pts, binary, snapshot):
             rospy.logwarn("FM2 planner rejected a colliding path")
-            self._clear_path_for_snapshot(goal_world, grid_bin)
+            self._clear_path_for_goal(goal_world)
             return
 
         with self._state_lock:

@@ -11,6 +11,8 @@ from gazebo_msgs.msg import ModelState
 from geometry_msgs.msg import Pose, Twist
 from tf.transformations import quaternion_from_euler
 
+from nav_validation import require_float, require_nonempty_string
+
 
 def make_state(name: str, x: float, y: float, z: float, yaw: float) -> ModelState:
     """Create a Gazebo model-state message at the requested planar pose."""
@@ -37,23 +39,36 @@ class PersonPatrolMover:
 
     def __init__(self) -> None:
         """Read patrol configuration and initialize the Gazebo publisher."""
-        self.model_name = rospy.get_param("~model_name", "person_target")
-        self.speed = float(rospy.get_param("~speed", 0.3))
-        self.z_fixed = float(rospy.get_param("~z_fixed", 0.0))
-        self.rate_hz = float(rospy.get_param("~rate", 20.0))
-        self.waypoint_tolerance = float(rospy.get_param("~waypoint_tolerance", 0.05))
+        self.model_name = require_nonempty_string(
+            "~model_name", rospy.get_param("~model_name", "person_target")
+        )
+        self.speed = require_float("~speed", rospy.get_param("~speed", 0.3), 0.0)
+        self.z_fixed = require_float("~z_fixed", rospy.get_param("~z_fixed", 0.0))
+        self.rate_hz = require_float(
+            "~rate", rospy.get_param("~rate", 20.0), 0.0, minimum_inclusive=False
+        )
+        self.waypoint_tolerance = require_float(
+            "~waypoint_tolerance", rospy.get_param("~waypoint_tolerance", 0.05), 0.0
+        )
 
         raw_wps = rospy.get_param(
             "~waypoints",
             [[1.0, 1.0], [1.0, -1.0], [-1.0, -1.0], [-1.0, 1.0]],
         )
-        self.waypoints = [(float(p[0]), float(p[1])) for p in raw_wps]
+        try:
+            self.waypoints = [
+                (
+                    require_float("~waypoints[{}][0]".format(index), point[0]),
+                    require_float("~waypoints[{}][1]".format(index), point[1]),
+                )
+                for index, point in enumerate(raw_wps)
+            ]
+        except (IndexError, TypeError) as error:
+            raise ValueError(
+                "parameter '~waypoints' must contain [x, y] pairs"
+            ) from error
         if len(self.waypoints) < 2:
-            rospy.logwarn(
-                "Person patrol requires at least two waypoints; "
-                "using the default square route"
-            )
-            self.waypoints = [(1.0, 1.0), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)]
+            raise ValueError("parameter '~waypoints' must contain at least two points")
 
         self.pub = rospy.Publisher("/gazebo/set_model_state", ModelState, queue_size=10)
         self._target_idx = 0

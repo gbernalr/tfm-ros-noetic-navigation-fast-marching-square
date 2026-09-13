@@ -12,26 +12,21 @@ import math
 import random
 from collections import deque
 from dataclasses import dataclass
-from functools import wraps
 from threading import RLock
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import rospy
 import tf2_ros
 from gazebo_msgs.msg import ModelStates
 from rgbd_person_tracker.msg import PersonTrack, PersonTrackArray
 
-
-def _synchronized(method: Callable[..., object]) -> Callable[..., object]:
-    """Serialize access to a node's mutable runtime state."""
-
-    @wraps(method)
-    def wrapped(*args: object, **kwargs: object) -> object:
-        self = args[0]
-        with self._state_lock:
-            return method(*args, **kwargs)
-
-    return wrapped
+from nav_validation import (
+    require_bool,
+    require_float,
+    require_int,
+    require_nonempty_string,
+)
+from navigation_utils import synchronized
 
 
 @dataclass
@@ -53,38 +48,97 @@ class ZedBodyTrackingSimNode:
     def __init__(self) -> None:
         """Read sensor configuration and initialize tracking and ROS interfaces."""
         self._state_lock = RLock()
-        self.output_topic = rospy.get_param("~person_tracks_topic", "/person_tracks")
-        self.output_frame = rospy.get_param("~output_frame", "map")
-        self.gazebo_world_frame = rospy.get_param("~gazebo_world_frame", "world")
-        self.camera_frame = rospy.get_param("~camera_frame", "zed_sim_camera_frame")
+        self.output_topic = require_nonempty_string(
+            "~person_tracks_topic",
+            rospy.get_param("~person_tracks_topic", "/person_tracks"),
+        )
+        self.output_frame = require_nonempty_string(
+            "~output_frame", rospy.get_param("~output_frame", "map")
+        )
+        self.gazebo_world_frame = require_nonempty_string(
+            "~gazebo_world_frame", rospy.get_param("~gazebo_world_frame", "world")
+        )
+        self.camera_frame = require_nonempty_string(
+            "~camera_frame", rospy.get_param("~camera_frame", "zed_sim_camera_frame")
+        )
+        raw_prefixes = rospy.get_param(
+            "~person_model_prefixes", ["person_target", "person_"]
+        )
+        if not isinstance(raw_prefixes, (list, tuple)) or not raw_prefixes:
+            raise ValueError(
+                "parameter '~person_model_prefixes' must be a non-empty list"
+            )
         self.model_prefixes = tuple(
-            rospy.get_param("~person_model_prefixes", ["person_target", "person_"])
+            require_nonempty_string("~person_model_prefixes[{}]".format(index), prefix)
+            for index, prefix in enumerate(raw_prefixes)
         )
 
-        self.sample_rate = float(rospy.get_param("~sample_rate", 15.0))
-        self.min_range = float(rospy.get_param("~min_range", 0.5))
-        self.max_range = float(rospy.get_param("~max_range", 8.0))
+        self.sample_rate = require_float(
+            "~sample_rate",
+            rospy.get_param("~sample_rate", 15.0),
+            0.0,
+            minimum_inclusive=False,
+        )
+        self.min_range = require_float(
+            "~min_range", rospy.get_param("~min_range", 0.5), 0.0
+        )
+        self.max_range = require_float(
+            "~max_range",
+            rospy.get_param("~max_range", 8.0),
+            0.0,
+            minimum_inclusive=False,
+        )
+        if self.min_range >= self.max_range:
+            raise ValueError("parameter '~min_range' must be smaller than '~max_range'")
         self.horizontal_fov = math.radians(
-            float(rospy.get_param("~horizontal_fov_deg", 110.0))
+            require_float(
+                "~horizontal_fov_deg",
+                rospy.get_param("~horizontal_fov_deg", 110.0),
+                0.0,
+                360.0,
+                minimum_inclusive=False,
+            )
         )
-        self.simulate_sensor_noise = bool(
-            rospy.get_param("~simulate_sensor_noise", False)
+        self.simulate_sensor_noise = require_bool(
+            "~simulate_sensor_noise", rospy.get_param("~simulate_sensor_noise", False)
         )
-        self.detection_probability = float(
-            rospy.get_param("~detection_probability", 0.96)
+        self.detection_probability = require_float(
+            "~detection_probability",
+            rospy.get_param("~detection_probability", 0.96),
+            0.0,
+            1.0,
         )
-        self.distance_probability_drop = float(
-            rospy.get_param("~distance_probability_drop", 0.35)
+        self.distance_probability_drop = require_float(
+            "~distance_probability_drop",
+            rospy.get_param("~distance_probability_drop", 0.35),
+            0.0,
+            1.0,
         )
-        self.occlusion_probability = float(
-            rospy.get_param("~occlusion_probability", 0.05)
+        self.occlusion_probability = require_float(
+            "~occlusion_probability",
+            rospy.get_param("~occlusion_probability", 0.05),
+            0.0,
+            1.0,
         )
-        self.position_noise_std = float(rospy.get_param("~position_noise_std", 0.06))
-        self.velocity_noise_std = float(rospy.get_param("~velocity_noise_std", 0.08))
-        self.latency = float(rospy.get_param("~latency", 0.10))
-        self.tracking_timeout = float(rospy.get_param("~tracking_timeout", 0.50))
-        self.velocity_alpha = float(rospy.get_param("~velocity_smoothing", 0.5))
-        self.random = random.Random(int(rospy.get_param("~random_seed", 7)))
+        self.position_noise_std = require_float(
+            "~position_noise_std", rospy.get_param("~position_noise_std", 0.06), 0.0
+        )
+        self.velocity_noise_std = require_float(
+            "~velocity_noise_std", rospy.get_param("~velocity_noise_std", 0.08), 0.0
+        )
+        self.latency = require_float("~latency", rospy.get_param("~latency", 0.10), 0.0)
+        self.tracking_timeout = require_float(
+            "~tracking_timeout",
+            rospy.get_param("~tracking_timeout", 0.50),
+            0.0,
+            minimum_inclusive=False,
+        )
+        self.velocity_alpha = require_float(
+            "~velocity_smoothing", rospy.get_param("~velocity_smoothing", 0.5), 0.0, 1.0
+        )
+        self.random = random.Random(
+            require_int("~random_seed", rospy.get_param("~random_seed", 7))
+        )
 
         # Deterministic mode preserves FOV, range, and frequency while disabling
         # noise, latency, and missed detections for reproducible tests.
@@ -122,7 +176,7 @@ class ZedBodyTrackingSimNode:
             self.output_topic,
         )
 
-    @_synchronized
+    @synchronized
     def _cb_models(self, msg: ModelStates) -> None:
         """Sample visible person models and update their simulated tracks."""
         now = rospy.Time.now()
@@ -342,7 +396,7 @@ class ZedBodyTrackingSimNode:
             )
         return output
 
-    @_synchronized
+    @synchronized
     def _publish_ready(self, _event: object) -> None:
         """Publish the newest simulated output whose latency has elapsed."""
         now = rospy.Time.now()

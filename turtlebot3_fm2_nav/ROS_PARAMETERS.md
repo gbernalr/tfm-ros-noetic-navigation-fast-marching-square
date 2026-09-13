@@ -2,13 +2,15 @@
 
 All distances are expressed in metres, angles in radians, durations in seconds,
 and frequencies in hertz unless stated otherwise. Ranges document the intended
-operating domain; runtime validation will be added separately.
+operating domain. Invalid values now make the affected node fail during startup
+with a descriptive error instead of being silently clamped or coerced.
 
 ## `fm2_controller_node.py`
 
 | Parameter | Unit / range | Default | Description |
 |---|---:|---:|---|
 | `~frame_map` | non-empty ROS frame ID | `map` | Global frame used by paths, goals, and poses. |
+| `~frame_base` | non-empty ROS frame ID | `base_link` | Robot base frame used as a TF pose fallback when AMCL is unavailable or stale. |
 | `~lookahead` | m, > 0 | `0.35` | Path look-ahead distance. |
 | `~v_lin` | m/s, >= 0 | `0.22` | Nominal linear velocity. |
 | `~v_ang_max` | rad/s, > 0 | `1.5` | Maximum tracking angular velocity. |
@@ -21,6 +23,8 @@ operating domain; runtime validation will be added separately.
 | `~min_linear_speed_factor` | dimensionless, [0, 1] | `0.2` | Lower bound for linear speed while tracking a turn. |
 | `~rate` | Hz, > 0 | `20` | Control-loop frequency. |
 | `~tf_timeout` | s, > 0 | `0.5` | Maximum wait for a required TF transformation. |
+| `~pose_timeout` | s, >= 0 | `0.5` | Maximum age of AMCL pose; a current `~frame_map` to `~frame_base` TF is used before stopping. Zero disables the staleness check. |
+| `~path_timeout` | s, >= 0 | `1.5` | Maximum age of the active path; zero disables the watchdog. |
 | `~k_theta` | 1/s, >= 0 | `2.0` | Proportional heading gain. |
 | `~goal_yaw_tolerance` | rad, >= 0 | `0.10` | Final orientation tolerance. |
 | `~use_goal_yaw` | boolean | `true` | Enable final goal-orientation alignment. |
@@ -68,6 +72,11 @@ operating domain; runtime validation will be added separately.
 | `~rate` | Hz, > 0 | `20` | Planner-loop frequency. |
 
 ## `simple_nav_node.py`
+
+> **Deprecated.** This combined planner/controller is retained solely for
+> backward-compatible demonstrations. New deployments must launch
+> `fm2_planner_node.py` and `fm2_controller_node.py`, which separate planning,
+> control, and safety responsibilities.
 
 | Parameter | Unit / range | Default | Description |
 |---|---:|---:|---|

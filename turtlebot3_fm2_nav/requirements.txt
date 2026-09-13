@@ -1,0 +1,3 @@
+# The distribution is named fast-marching-square; it exposes the ``fm2``
+# Python module imported by the navigation nodes.
+fast-marching-square==0.1.1

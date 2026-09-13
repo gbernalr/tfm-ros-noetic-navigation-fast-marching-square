@@ -1,0 +1,9 @@
+<launch>
+  <node pkg="turtlebot3_fm2_nav" type="fm2_controller_node.py"
+        name="fm2_controller_node" output="screen">
+    <param name="pose_timeout" value="5.0"/>
+    <param name="path_timeout" value="5.0"/>
+  </node>
+  <test test-name="controller_watchdog" pkg="turtlebot3_fm2_nav"
+        type="test_controller_watchdog.py" time-limit="30"/>
+</launch>

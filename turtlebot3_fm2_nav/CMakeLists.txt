@@ -58,14 +58,29 @@ catkin_install_python(
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
+# These are importable modules, not executable ROS nodes. Catkin's Python
+# relay scripts cannot be imported, so copy the source modules verbatim to the
+# devel space and install them alongside the nodes.
+file(MAKE_DIRECTORY ${CATKIN_DEVEL_PREFIX}/${CATKIN_PACKAGE_BIN_DESTINATION})
+foreach(module nav_validation navigation_utils)
+  configure_file(
+    src/${module}.py
+    ${CATKIN_DEVEL_PREFIX}/${CATKIN_PACKAGE_BIN_DESTINATION}/${module}.py
+    COPYONLY
+  )
+endforeach()
+install(
+  FILES src/nav_validation.py src/navigation_utils.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 #############
 ## Testing ##
 #############
 
-## Ejemplos de tests (comentados)
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_turtlebot3_fm2_nav.cpp)
-# if(TARGET ${PROJECT_NAME}-test)
-#   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
-# endif()
-
-# catkin_add_nosetests(test)
+if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  catkin_add_nosetests(test/test_nav_validation.py)
+  catkin_add_nosetests(test/test_planner_geometry.py)
+  add_rostest(test/controller_watchdog.test)
+endif()

@@ -11,19 +11,39 @@ import rospy
 from gazebo_msgs.msg import ModelStates
 from rgbd_person_tracker.msg import PersonTrack, PersonTrackArray
 
+from nav_validation import require_float, require_int, require_nonempty_string
+
 
 class PersonTrackPublisher:
     """ROS adapter from Gazebo model state to a confirmed person track."""
 
     def __init__(self) -> None:
         """Read configuration and initialize tracking state and ROS interfaces."""
-        self.model_name = rospy.get_param("~person_model_name", "person_target")
-        self.output_frame = rospy.get_param("~output_frame", "map")
-        self.track_id = int(rospy.get_param("~track_id", 1))
-        self.velocity_alpha = float(rospy.get_param("~velocity_smoothing", 0.5))
-        self.publish_rate = float(rospy.get_param("~publish_rate", 15.0))
-        self.max_speed_warn = float(rospy.get_param("~max_speed_warn", 1.5))
-        self.min_dt = float(rospy.get_param("~min_dt", 0.01))
+        self.model_name = require_nonempty_string(
+            "~person_model_name", rospy.get_param("~person_model_name", "person_target")
+        )
+        self.output_frame = require_nonempty_string(
+            "~output_frame", rospy.get_param("~output_frame", "map")
+        )
+        self.track_id = require_int("~track_id", rospy.get_param("~track_id", 1), 0)
+        self.velocity_alpha = require_float(
+            "~velocity_smoothing", rospy.get_param("~velocity_smoothing", 0.5), 0.0, 1.0
+        )
+        self.publish_rate = require_float(
+            "~publish_rate",
+            rospy.get_param("~publish_rate", 15.0),
+            0.0,
+            minimum_inclusive=False,
+        )
+        self.max_speed_warn = require_float(
+            "~max_speed_warn",
+            rospy.get_param("~max_speed_warn", 1.5),
+            0.0,
+            minimum_inclusive=False,
+        )
+        self.min_dt = require_float(
+            "~min_dt", rospy.get_param("~min_dt", 0.01), 0.0, minimum_inclusive=False
+        )
 
         self._last_pos = None
         self._last_time = None

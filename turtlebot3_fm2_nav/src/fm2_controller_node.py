@@ -5,9 +5,8 @@ ROS parameters are documented in ``ROS_PARAMETERS.md``.
 """
 
 import math
-from functools import wraps
 from threading import RLock
-from typing import Callable, Tuple
+from typing import Tuple
 
 import numpy as np
 import rospy
@@ -16,17 +15,14 @@ import tf2_ros
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Quaternion, Twist
 from nav_msgs.msg import Path
 
-
-def _synchronized(method: Callable[..., object]) -> Callable[..., object]:
-    """Serialize updates and reads of controller state across ROS threads."""
-
-    @wraps(method)
-    def wrapped(*args: object, **kwargs: object) -> object:
-        self = args[0]
-        with self._state_lock:
-            return method(*args, **kwargs)
-
-    return wrapped
+from nav_validation import (
+    require_bool,
+    require_finite_xy,
+    require_float,
+    require_int,
+    require_nonempty_string,
+)
+from navigation_utils import quaternion_yaw, synchronized, wrap_to_pi
 
 
 class FM2Controller:
@@ -36,36 +32,92 @@ class FM2Controller:
         """Read configuration and initialize ROS interfaces and controller state."""
         self._state_lock = RLock()
         # Coordinate frames
-        self.frame_map = rospy.get_param("~frame_map", "map")
+        self.frame_map = require_nonempty_string(
+            "~frame_map", rospy.get_param("~frame_map", "map")
+        )
+        self.frame_base = require_nonempty_string(
+            "~frame_base", rospy.get_param("~frame_base", "base_link")
+        )
 
         # Path-tracking parameters
-        self.lookahead_dist = float(rospy.get_param("~lookahead", 0.35))
-        self.v_lin = float(rospy.get_param("~v_lin", 0.22))
-        self.v_ang_max = float(rospy.get_param("~v_ang_max", 1.5))
+        self.lookahead_dist = require_float(
+            "~lookahead",
+            rospy.get_param("~lookahead", 0.35),
+            0.0,
+            minimum_inclusive=False,
+        )
+        self.v_lin = require_float("~v_lin", rospy.get_param("~v_lin", 0.22), 0.0)
+        self.v_ang_max = require_float(
+            "~v_ang_max",
+            rospy.get_param("~v_ang_max", 1.5),
+            0.0,
+            minimum_inclusive=False,
+        )
         # Stop translating when the target is too far to the side. Combining a
         # low linear velocity with maximum rotation creates very small circles.
-        self.heading_align_threshold = float(
-            rospy.get_param("~heading_align_threshold", 0.35)
+        self.heading_align_threshold = require_float(
+            "~heading_align_threshold",
+            rospy.get_param("~heading_align_threshold", 0.35),
+            0.0,
+            math.pi,
         )
-        self.align_v_ang_max = float(rospy.get_param("~align_v_ang_max", 0.8))
-        self.goal_tolerance = float(rospy.get_param("~goal_tolerance", 0.08))
-        self.path_point_tolerance = float(
-            rospy.get_param("~path_point_tolerance", 0.25)
+        self.align_v_ang_max = require_float(
+            "~align_v_ang_max",
+            rospy.get_param("~align_v_ang_max", 0.8),
+            0.0,
+            minimum_inclusive=False,
         )
-        self.turn_slowdown_angle = float(rospy.get_param("~turn_slowdown_angle", 1.2))
-        self.max_turn_speed_reduction = float(
-            rospy.get_param("~max_turn_speed_reduction", 0.8)
+        self.goal_tolerance = require_float(
+            "~goal_tolerance", rospy.get_param("~goal_tolerance", 0.08), 0.0
         )
-        self.min_linear_speed_factor = float(
-            rospy.get_param("~min_linear_speed_factor", 0.2)
+        self.path_point_tolerance = require_float(
+            "~path_point_tolerance", rospy.get_param("~path_point_tolerance", 0.25), 0.0
         )
-        self.rate_hz = int(rospy.get_param("~rate", 20))
-        self.tf_timeout = rospy.Duration(float(rospy.get_param("~tf_timeout", 0.5)))
+        self.turn_slowdown_angle = require_float(
+            "~turn_slowdown_angle",
+            rospy.get_param("~turn_slowdown_angle", 1.2),
+            0.0,
+            minimum_inclusive=False,
+        )
+        self.max_turn_speed_reduction = require_float(
+            "~max_turn_speed_reduction",
+            rospy.get_param("~max_turn_speed_reduction", 0.8),
+            0.0,
+            1.0,
+        )
+        self.min_linear_speed_factor = require_float(
+            "~min_linear_speed_factor",
+            rospy.get_param("~min_linear_speed_factor", 0.2),
+            0.0,
+            1.0,
+        )
+        self.rate_hz = require_int("~rate", rospy.get_param("~rate", 20), 1)
+        self.tf_timeout = rospy.Duration(
+            require_float(
+                "~tf_timeout",
+                rospy.get_param("~tf_timeout", 0.5),
+                0.0,
+                minimum_inclusive=False,
+            )
+        )
+        self.pose_timeout = require_float(
+            "~pose_timeout", rospy.get_param("~pose_timeout", 0.5), 0.0
+        )
+        self.path_timeout = require_float(
+            "~path_timeout", rospy.get_param("~path_timeout", 1.5), 0.0
+        )
 
         # Final orientation
-        self.k_theta = float(rospy.get_param("~k_theta", 2.0))
-        self.goal_yaw_tolerance = float(rospy.get_param("~goal_yaw_tolerance", 0.10))
-        self.use_goal_yaw = bool(rospy.get_param("~use_goal_yaw", True))
+        self.k_theta = require_float("~k_theta", rospy.get_param("~k_theta", 2.0), 0.0)
+        self.goal_yaw_tolerance = require_float(
+            "~goal_yaw_tolerance",
+            rospy.get_param("~goal_yaw_tolerance", 0.10),
+            0.0,
+            math.pi,
+        )
+        self.use_goal_yaw = require_bool(
+            "~use_goal_yaw", rospy.get_param("~use_goal_yaw", True)
+        )
 
         # Runtime state
         self.path_world = None  # List of (x, y) points in the map frame.
@@ -75,6 +127,8 @@ class FM2Controller:
         self.goal_yaw = None  # Desired goal yaw.
 
         self.last_pose = None  # Latest (x, y, yaw) pose.
+        self.last_pose_time = None
+        self.last_path_time = None
 
         # TF support for poses that are not expressed in frame_map.
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
@@ -89,6 +143,7 @@ class FM2Controller:
             "amcl_pose", PoseWithCovarianceStamped, self.cb_amcl, queue_size=1
         )
         self.pub_cmd = rospy.Publisher("cmd_vel", Twist, queue_size=1)
+        rospy.on_shutdown(self._stop)
 
         rospy.loginfo("FM2 controller initialized")
 
@@ -97,14 +152,12 @@ class FM2Controller:
     @staticmethod
     def _yaw_from_quat(q: Quaternion) -> float:
         """Return the planar yaw represented by a quaternion-like object."""
-        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
-        return math.atan2(siny_cosp, cosy_cosp)
+        return quaternion_yaw(q)
 
     @staticmethod
     def _wrap_to_pi(angle: float) -> float:
         """Normalize an angle to the half-open interval [-pi, pi)."""
-        return (angle + math.pi) % (2 * math.pi) - math.pi
+        return wrap_to_pi(angle)
 
     def _transform_pose(self, pose_stamped: PoseStamped, to_frame: str) -> PoseStamped:
         """Transform a stamped pose into the requested frame."""
@@ -122,18 +175,77 @@ class FM2Controller:
         """Publish a zero-velocity command."""
         self.pub_cmd.publish(Twist())
 
+    def _update_pose_from_tf(self) -> bool:
+        """Refresh the robot pose from the latest map-to-base TF transform.
+
+        AMCL normally publishes this pose, but it may publish only an initial
+        estimate in simulation.  TF is still updated by the localization and
+        robot-state chains, so it is a safe fallback for the watchdog.
+        """
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.frame_map,
+                self.frame_base,
+                rospy.Time(0),
+                self.tf_timeout,
+            )
+        except (
+            tf2_ros.LookupException,
+            tf2_ros.ConnectivityException,
+            tf2_ros.ExtrapolationException,
+        ) as error:
+            rospy.logwarn_throttle(
+                2.0,
+                "FM2 controller could not refresh pose from TF %s <- %s: %s",
+                self.frame_map,
+                self.frame_base,
+                error,
+            )
+            return False
+
+        translation = transform.transform.translation
+        self.last_pose = (
+            translation.x,
+            translation.y,
+            self._yaw_from_quat(transform.transform.rotation),
+        )
+        # Use receive time, rather than the source-transform timestamp: this
+        # value is exclusively the watchdog's freshness indicator.
+        self.last_pose_time = rospy.Time.now()
+        return True
+
     # --------------------------- ROS callbacks ---------------------------
 
-    @_synchronized
+    @synchronized
     def cb_path(self, msg: Path) -> None:
         """Store a newly planned path and resume tracking near the robot."""
+        if msg.poses and msg.header.frame_id != self.frame_map:
+            rospy.logwarn(
+                "FM2 controller rejected a path in frame %r; expected %r",
+                msg.header.frame_id,
+                self.frame_map,
+            )
+            self.path_world = None
+            self.path_idx = 0
+            self.last_path_time = None
+            self._stop()
+            return
         # Convert the ROS Path into a list of (x, y) points.
         pts = []
         for ps in msg.poses:
-            pts.append((ps.pose.position.x, ps.pose.position.y))
+            x, y = ps.pose.position.x, ps.pose.position.y
+            if not math.isfinite(x) or not math.isfinite(y):
+                rospy.logwarn("FM2 controller rejected a path with non-finite points")
+                self.path_world = None
+                self.path_idx = 0
+                self.last_path_time = None
+                self._stop()
+                return
+            pts.append((x, y))
 
         if pts:
             self.path_world = pts
+            self.last_path_time = rospy.Time.now()
             # The planner updates frequently. Starting at index zero after each
             # update would send the robot backwards; resume at the closest point.
             if self.last_pose is not None:
@@ -149,10 +261,15 @@ class FM2Controller:
             rospy.logwarn("FM2 controller received an empty path")
             self.path_world = None
             self.path_idx = 0
+            self.last_path_time = None
+            self._stop()
 
-    @_synchronized
+    @synchronized
     def cb_goal(self, msg: PoseStamped) -> None:
         """Store the requested final orientation from a navigation goal."""
+        if not msg.header.frame_id:
+            rospy.logwarn("FM2 controller rejected a goal without frame_id")
+            return
         # The controller only uses the goal yaw during final alignment.
         if msg.header.frame_id != self.frame_map:
             try:
@@ -165,16 +282,31 @@ class FM2Controller:
                 rospy.logwarn("FM2 controller could not transform the goal: %s", e)
                 return
 
+        try:
+            require_finite_xy("goal", msg.pose.position.x, msg.pose.position.y)
+        except ValueError as error:
+            rospy.logwarn("FM2 controller rejected an invalid goal: %s", error)
+            return
+
         if self.use_goal_yaw:
             self.goal_yaw = self._yaw_from_quat(msg.pose.orientation)
         else:
             self.goal_yaw = None
 
         self.mode_align = False
+        self.path_world = None
+        self.path_idx = 0
+        self.last_path_time = None
+        self._stop()
 
-    @_synchronized
+    @synchronized
     def cb_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         """Update the robot pose from AMCL, transforming it when required."""
+        if not msg.header.frame_id:
+            rospy.logwarn_throttle(
+                2.0, "FM2 controller rejected an AMCL pose without frame_id"
+            )
+            return
         if msg.header.frame_id != self.frame_map:
             try:
                 pose = PoseStamped()
@@ -196,7 +328,13 @@ class FM2Controller:
             y = msg.pose.pose.position.y
             yaw = self._yaw_from_quat(msg.pose.pose.orientation)
 
+        if not all(math.isfinite(value) for value in (x, y, yaw)):
+            rospy.logwarn_throttle(
+                2.0, "FM2 controller rejected a non-finite AMCL pose"
+            )
+            return
         self.last_pose = (x, y, yaw)
+        self.last_pose_time = rospy.Time.now()
 
     # --------------------------- Control logic ---------------------------
 
@@ -272,14 +410,61 @@ class FM2Controller:
         )
         self.pub_cmd.publish(twist)
 
-    @_synchronized
+    def _watchdog_allows_control(self, now: rospy.Time) -> bool:
+        """Stop safely when the robot pose or active route is unavailable."""
+        pose_missing = self.last_pose is None or self.last_pose_time is None
+        pose_stale = (
+            self.pose_timeout > 0.0
+            and self.last_pose_time is not None
+            and (now - self.last_pose_time).to_sec() > self.pose_timeout
+        )
+        if pose_missing or pose_stale:
+            if self._update_pose_from_tf():
+                # A current map-to-base transform is an equally valid pose
+                # source. Continue controlling with this refreshed snapshot.
+                pass
+            else:
+                reason = "unavailable" if pose_missing else "stale"
+                rospy.logwarn_throttle(
+                    2.0,
+                    "FM2 controller stopped because the robot pose is %s",
+                    reason,
+                )
+                self._stop()
+                return False
+
+        if self.last_pose is None:
+            rospy.logwarn_throttle(
+                2.0, "FM2 controller stopped because the robot pose is unavailable"
+            )
+            self._stop()
+            return False
+        if not self.path_world or self.last_path_time is None:
+            self._stop()
+            return False
+        if (
+            self.path_timeout > 0.0
+            and (now - self.last_path_time).to_sec() > self.path_timeout
+        ):
+            rospy.logwarn_throttle(
+                2.0, "FM2 controller stopped because the active path is stale"
+            )
+            self.path_world = None
+            self.path_idx = 0
+            self.last_path_time = None
+            self._stop()
+            return False
+        return True
+
+    @synchronized
     def _control_step(self) -> None:
         """Execute one iteration of the path-following state machine."""
-        if self.mode_align:
-            self._align_to_goal()
+        now = rospy.Time.now()
+        if not self._watchdog_allows_control(now):
             return
 
-        if not self.path_world or self.last_pose is None:
+        if self.mode_align:
+            self._align_to_goal()
             return
 
         x, y, yaw = self.last_pose

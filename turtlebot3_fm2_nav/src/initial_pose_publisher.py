@@ -9,18 +9,22 @@ import math
 import rospy
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
+from nav_validation import require_float, require_int, require_nonempty_string
+
 
 def main() -> None:
     """Build and repeatedly publish the configured initial AMCL pose."""
     rospy.init_node("initial_pose_publisher")
-    frame_id = rospy.get_param("~frame_id", "map")
-    x = float(rospy.get_param("~x", 0.0))
-    y = float(rospy.get_param("~y", 0.0))
-    yaw = float(rospy.get_param("~yaw", 0.0))
-    repeats = max(1, int(rospy.get_param("~repeats", 5)))
-    rate_hz = max(0.1, float(rospy.get_param("~rate", 1.0)))
-    std_xy = float(rospy.get_param("~std_xy", 0.10))
-    std_yaw = float(rospy.get_param("~std_yaw", 0.10))
+    frame_id = require_nonempty_string("~frame_id", rospy.get_param("~frame_id", "map"))
+    x = require_float("~x", rospy.get_param("~x", 0.0))
+    y = require_float("~y", rospy.get_param("~y", 0.0))
+    yaw = require_float("~yaw", rospy.get_param("~yaw", 0.0))
+    repeats = require_int("~repeats", rospy.get_param("~repeats", 5), 1)
+    rate_hz = require_float(
+        "~rate", rospy.get_param("~rate", 1.0), 0.0, minimum_inclusive=False
+    )
+    std_xy = require_float("~std_xy", rospy.get_param("~std_xy", 0.10), 0.0)
+    std_yaw = require_float("~std_yaw", rospy.get_param("~std_yaw", 0.10), 0.0)
 
     pub = rospy.Publisher("/initialpose", PoseWithCovarianceStamped, queue_size=1)
     msg = PoseWithCovarianceStamped()
