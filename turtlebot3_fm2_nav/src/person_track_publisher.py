@@ -1,32 +1,49 @@
 #!/usr/bin/env python3
-"""
-person_track_publisher.py — Publica la posición y velocidad ground-truth de
-un modelo de Gazebo (persona) como rgbd_person_tracker/PersonTrackArray en
-/person_tracks, para poder validar la navegación FM2 sin depender del
-tracker RGB-D real.
+"""Publish Gazebo ground-truth person position and velocity as tracked data.
 
-NOTA: es una fuente de "percepción perfecta" para pruebas. Publica en el
-frame 'map' asumiendo que el mundo de Gazebo y el mapa estático están
-razonablemente alineados en el origen (caso habitual con los mundos y mapas
-por defecto de turtlebot3). Si detectas offset visual en RViz, ajusta
-output_frame o añade una transformación estática world->map.
+This test-only source assumes that the Gazebo world and static map are aligned.
+Adjust the output frame or provide a ``world`` to ``map`` transform otherwise.
+ROS parameters are documented in ``ROS_PARAMETERS.md``.
 """
-import rospy
+
 import numpy as np
+import rospy
 from gazebo_msgs.msg import ModelStates
-
 from rgbd_person_tracker.msg import PersonTrack, PersonTrackArray
+
+from nav_validation import require_float, require_int, require_nonempty_string
 
 
 class PersonTrackPublisher:
-    def __init__(self):
-        self.model_name = rospy.get_param("~person_model_name", "person_target")
-        self.output_frame = rospy.get_param("~output_frame", "map")
-        self.track_id = int(rospy.get_param("~track_id", 1))
-        self.velocity_alpha = float(rospy.get_param("~velocity_smoothing", 0.5))
-        self.publish_rate = float(rospy.get_param("~publish_rate", 15.0))
-        self.max_speed_warn = float(rospy.get_param("~max_speed_warn", 1.5))
-        self.min_dt = float(rospy.get_param("~min_dt", 0.01))
+    """ROS adapter from Gazebo model state to a confirmed person track."""
+
+    def __init__(self) -> None:
+        """Read configuration and initialize tracking state and ROS interfaces."""
+        self.model_name = require_nonempty_string(
+            "~person_model_name", rospy.get_param("~person_model_name", "person_target")
+        )
+        self.output_frame = require_nonempty_string(
+            "~output_frame", rospy.get_param("~output_frame", "map")
+        )
+        self.track_id = require_int("~track_id", rospy.get_param("~track_id", 1), 0)
+        self.velocity_alpha = require_float(
+            "~velocity_smoothing", rospy.get_param("~velocity_smoothing", 0.5), 0.0, 1.0
+        )
+        self.publish_rate = require_float(
+            "~publish_rate",
+            rospy.get_param("~publish_rate", 15.0),
+            0.0,
+            minimum_inclusive=False,
+        )
+        self.max_speed_warn = require_float(
+            "~max_speed_warn",
+            rospy.get_param("~max_speed_warn", 1.5),
+            0.0,
+            minimum_inclusive=False,
+        )
+        self.min_dt = require_float(
+            "~min_dt", rospy.get_param("~min_dt", 0.01), 0.0, minimum_inclusive=False
+        )
 
         self._last_pos = None
         self._last_time = None
@@ -40,11 +57,13 @@ class PersonTrackPublisher:
         )
 
         rospy.loginfo(
-            "[person_track_publisher.py::__init__] modelo=%s frame_salida=%s",
-            self.model_name, self.output_frame,
+            "Ground-truth person publisher initialized: model=%s, output_frame=%s",
+            self.model_name,
+            self.output_frame,
         )
 
-    def _cb(self, msg: ModelStates):
+    def _cb(self, msg: ModelStates) -> None:
+        """Estimate velocity and publish the configured Gazebo person model."""
         try:
             idx = msg.name.index(self.model_name)
         except ValueError:
@@ -59,8 +78,8 @@ class PersonTrackPublisher:
             if dt < self.min_dt:
                 rospy.logwarn_throttle(
                     1.0,
-                    "[person_track_publisher.py::_cb] dt sospechosamente pequeño (%.4fs), "
-                    "se omite esta muestra para no inflar la velocidad",
+                    "Person-track sample interval is too short (%.4f s); "
+                    "skipping velocity estimation",
                     dt,
                 )
             elif dt > 1e-3:
@@ -72,19 +91,34 @@ class PersonTrackPublisher:
 
                 rospy.loginfo_throttle(
                     1.0,
-                    "[person_track_publisher.py::_cb] pos=(%.2f,%.2f) dt=%.4f raw_vel=(%.2f,%.2f)|%.2fm/s "
-                    "vel_suavizada=(%.2f,%.2f)|%.2fm/s",
-                    pos[0], pos[1], dt, raw_vel[0], raw_vel[1], raw_speed,
-                    self._vel[0], self._vel[1], smoothed_speed,
+                    "Person track: position=(%.2f, %.2f), dt=%.4f s, "
+                    "raw_velocity=(%.2f, %.2f), raw_speed=%.2f m/s, "
+                    "filtered_velocity=(%.2f, %.2f), filtered_speed=%.2f m/s",
+                    pos[0],
+                    pos[1],
+                    dt,
+                    raw_vel[0],
+                    raw_vel[1],
+                    raw_speed,
+                    self._vel[0],
+                    self._vel[1],
+                    smoothed_speed,
                 )
 
                 if raw_speed > self.max_speed_warn:
                     rospy.logwarn(
-                        "[person_track_publisher.py::_cb] PICO DE VELOCIDAD detectado: "
-                        "raw_speed=%.2fm/s (umbral=%.2f) dt=%.4fs pos_prev=(%.2f,%.2f) "
-                        "pos_actual=(%.2f,%.2f) -> vel_suavizada resultante=%.2fm/s",
-                        raw_speed, self.max_speed_warn, dt,
-                        self._last_pos[0], self._last_pos[1], pos[0], pos[1],
+                        "Person speed exceeds the configured threshold: "
+                        "raw_speed=%.2f m/s, threshold=%.2f m/s, dt=%.4f s, "
+                        "previous_position=(%.2f, %.2f), "
+                        "current_position=(%.2f, %.2f), "
+                        "filtered_speed=%.2f m/s",
+                        raw_speed,
+                        self.max_speed_warn,
+                        dt,
+                        self._last_pos[0],
+                        self._last_pos[1],
+                        pos[0],
+                        pos[1],
                         smoothed_speed,
                     )
 
